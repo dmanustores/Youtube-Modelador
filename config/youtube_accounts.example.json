@@ -1,0 +1,20 @@
+{
+  "activeChannelId": "UC_EXAMPLE_CHANNEL_ID",
+  "accounts": [
+    {
+      "channelId": "UC_EXAMPLE_CHANNEL_ID",
+      "title": "Nome do Seu Canal",
+      "customUrl": "@seucanal",
+      "clientId": "SEU_CLIENT_ID.apps.googleusercontent.com",
+      "clientSecret": "SEU_CLIENT_SECRET",
+      "tokens": {
+        "access_token": "EXEMPLO_TOKEN",
+        "refresh_token": "EXEMPLO_REFRESH_TOKEN",
+        "scope": "https://www.googleapis.com/auth/youtube.upload",
+        "token_type": "Bearer",
+        "expiry_date": 1700000000000
+      },
+      "isActive": true
+    }
+  ]
+}
