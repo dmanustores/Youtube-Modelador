@@ -1861,7 +1861,7 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
 
     this.app.post('/api/workflow/planned-themes', protect, async (req, res) => {
       try {
-        const { topic, hookAngle, whyBetter, format, scheduledDate, status, notes, fullScript } = req.body || {};
+        const { topic, hookAngle, whyBetter, format, scheduledDate, scheduledTime, status, notes, fullScript } = req.body || {};
         if (!topic || !String(topic).trim()) {
           return res.status(400).json({ success: false, error: 'O tema é obrigatório.' });
         }
@@ -1893,6 +1893,7 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
           whyBetter: whyBetter ? String(whyBetter).trim() : null,
           format: format || 'explainer',
           scheduledDate: scheduledDate || null,
+          scheduledTime: scheduledTime ? String(scheduledTime).trim() : null,
           status: status || 'pending',
           notes: notes ? String(notes).trim() : null,
           fullScript: cleanFullScript,
@@ -1979,11 +1980,24 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
         if (!this.workflow) return res.status(503).json({ success: false, error: 'Workflow service not ready' });
         const { days, count, language, fieldAHistory, strategyMode } = req.body || {};
         const profile = await this.db.getChannelProfile().catch(() => ({}));
+        let effectiveHistory = fieldAHistory || '';
+        if (!effectiveHistory && this.db) {
+          const raw = await this.db.getSetting('last_workflow_summary').catch(() => null);
+          if (raw) {
+            try {
+              const parsed = JSON.parse(raw);
+              effectiveHistory = parsed.summaryText || raw;
+            } catch (_e) {
+              effectiveHistory = raw;
+            }
+          }
+        }
+
         const result = await this.workflow.generateThemesFromChannelHistory({
           days: parseInt(days || '7', 10),
           count: count ? parseInt(count, 10) : null,
           language: language || 'it-IT',
-          fieldAHistory: fieldAHistory || '',
+          fieldAHistory: effectiveHistory,
           strategyMode: strategyMode || 'recovery',
           channelContext: profile
         });
@@ -2009,6 +2023,20 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
           fieldAHistory
         } = req.body || {};
         const profile = await this.db.getChannelProfile().catch(() => ({}));
+
+        let effectiveScriptHistory = fieldAHistory || '';
+        if (!effectiveScriptHistory && this.db) {
+          const raw = await this.db.getSetting('last_workflow_summary').catch(() => null);
+          if (raw) {
+            try {
+              const parsed = JSON.parse(raw);
+              effectiveScriptHistory = parsed.summaryText || raw;
+            } catch (_e) {
+              effectiveScriptHistory = raw;
+            }
+          }
+        }
+
         const result = await this.workflow.generateScript({
           topic,
           angle,
@@ -2019,7 +2047,7 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
           angleFamily,
           format: format || 'explainer',
           language: language || 'it-IT',
-          fieldAHistory: fieldAHistory || '',
+          fieldAHistory: effectiveScriptHistory,
           channelName: profile.name || ''
         });
 
@@ -2194,6 +2222,7 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
         });
 
         // Registrar / Atualizar tema no cronograma como 'posted' e com o formato correto
+        let syncedTheme = null;
         try {
           if (this.db) {
             const activeAccount = this.youtubeAccounts?.getActiveAccount();
@@ -2202,15 +2231,18 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
             const isShort = format === 'short' || /#shorts?/i.test(cleanTitle) || /#shorts?/i.test(description || '');
             const targetFormat = isShort ? 'short' : (format || 'explainer');
             const targetDate = publishTime ? String(publishTime).split('T')[0] : new Date().toISOString().split('T')[0];
+            const targetTime = publishTime && String(publishTime).includes('T')
+              ? String(publishTime).split('T')[1].slice(0, 5)
+              : (publishTime && String(publishTime).includes(' ') ? String(publishTime).split(' ')[1].slice(0, 5) : null);
             const youtubeUrl = result?.scheduleEntry?.youtubeUrl || null;
 
-            let syncedTheme = null;
             if (themeId) {
               syncedTheme = await this.db.updatePlannedTheme(themeId, {
                 status: 'posted',
                 format: targetFormat,
                 publishedUrl: youtubeUrl,
-                scheduledDate: targetDate
+                scheduledDate: targetDate,
+                scheduledTime: targetTime
               });
             } else {
               // Verificar se existe um tema existente com título correspondente
@@ -2226,7 +2258,8 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
                   status: 'posted',
                   format: targetFormat,
                   publishedUrl: youtubeUrl,
-                  scheduledDate: targetDate || match.scheduled_date
+                  scheduledDate: targetDate || match.scheduled_date,
+                  scheduledTime: targetTime || match.scheduled_time
                 });
               } else {
                 // Se foi envio direto de corte ou upload sem tema prévio, criar entrada no cronograma
@@ -2237,6 +2270,7 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
                   format: targetFormat,
                   status: 'posted',
                   scheduledDate: targetDate,
+                  scheduledTime: targetTime,
                   publishedUrl: youtubeUrl,
                   whyBetter: isShort ? '⚡ Envio Direto de Cortes / Short' : 'Upload Direto no Estúdio'
                 });

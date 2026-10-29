@@ -664,7 +664,8 @@ class Database {
     await this.ensureColumns('workflow_planned_themes', {
       full_script: 'TEXT',
       narration_blocks: 'TEXT',
-      script_char_count: 'INTEGER DEFAULT 0'
+      script_char_count: 'INTEGER DEFAULT 0',
+      scheduled_time: 'TEXT'
     });
 
     // Insert default settings
@@ -3009,8 +3010,8 @@ class Database {
     const scriptCharCount = theme.scriptCharCount !== undefined ? theme.scriptCharCount : (theme.script_char_count || (fullScript ? fullScript.length : 0));
 
     await this.executeQuery(
-      `INSERT INTO workflow_planned_themes (id, channel_id, topic, hook_angle, why_better, format, scheduled_date, status, published_url, notes, full_script, narration_blocks, script_char_count)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO workflow_planned_themes (id, channel_id, topic, hook_angle, why_better, format, scheduled_date, scheduled_time, status, published_url, notes, full_script, narration_blocks, script_char_count)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         theme.channelId || null,
@@ -3019,6 +3020,7 @@ class Database {
         theme.whyBetter || theme.why_better || null,
         theme.format || 'explainer',
         theme.scheduledDate || theme.scheduled_date || null,
+        theme.scheduledTime || theme.scheduled_time || null,
         theme.status || 'pending',
         theme.publishedUrl || theme.published_url || null,
         theme.notes || (theme.benchmarkRef ? JSON.stringify({ benchmarkRef: theme.benchmarkRef }) : null),
@@ -3111,6 +3113,7 @@ class Database {
     const whyBetter = changes.whyBetter !== undefined ? changes.whyBetter : (changes.why_better !== undefined ? changes.why_better : current.why_better);
     const format = changes.format !== undefined ? changes.format : current.format;
     const scheduledDate = changes.scheduledDate !== undefined ? changes.scheduledDate : (changes.scheduled_date !== undefined ? changes.scheduled_date : current.scheduled_date);
+    const scheduledTime = changes.scheduledTime !== undefined ? changes.scheduledTime : (changes.scheduled_time !== undefined ? changes.scheduled_time : current.scheduled_time);
     const status = changes.status !== undefined ? changes.status : current.status;
     const publishedUrl = changes.publishedUrl !== undefined ? changes.publishedUrl : (changes.published_url !== undefined ? changes.published_url : current.published_url);
     const notes = changes.notes !== undefined ? changes.notes : current.notes;
@@ -3121,11 +3124,11 @@ class Database {
 
     await this.executeQuery(
       `UPDATE workflow_planned_themes SET
-        topic = ?, hook_angle = ?, why_better = ?, format = ?, scheduled_date = ?,
+        topic = ?, hook_angle = ?, why_better = ?, format = ?, scheduled_date = ?, scheduled_time = ?,
         status = ?, published_url = ?, notes = ?, full_script = ?, narration_blocks = ?,
         script_char_count = ?, updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
-      [topic, hookAngle, whyBetter, format, scheduledDate, status, publishedUrl, notes, fullScript, narrationBlocks, scriptCharCount, id]
+      [topic, hookAngle, whyBetter, format, scheduledDate, scheduledTime, status, publishedUrl, notes, fullScript, narrationBlocks, scriptCharCount, id]
     );
 
     return this.getRow('SELECT * FROM workflow_planned_themes WHERE id = ?', [id]);

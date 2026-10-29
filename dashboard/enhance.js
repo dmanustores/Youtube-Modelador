@@ -13,7 +13,7 @@
 
   const MINI_LABELS = {
     overview: 'Início', workflow: 'Modelador', operator: 'Operador', pipeline: 'Pipeline',
-    calendar: 'Calendário', analytics: 'Estatísticas', engagement: 'Engajamento', readiness: 'Prontidão', settings: 'Configuração'
+    calendar: 'Calendário', analytics: 'Estatísticas', engagement: 'Engajamento', settings: 'Configuração'
   };
   function ensureMiniLabels() {
     $$('.nav-item').forEach(item => {
@@ -37,7 +37,6 @@
     calendar: ['PLANEJAMENTO EDITORIAL', 'Planeje antes de gerar.', 'Calendário'],
     analytics: ['DESEMPENHO', 'Transforme resultados nos próximos passos.', 'Estatísticas'],
     engagement: ['ENGAJAMENTO DO PÚBLICO', 'Comentários e respostas.', 'Engajamento'],
-    readiness: ['PRONTIDÃO DE PRODUÇÃO', 'Verifique antes de rodar a automação.', 'Prontidão'],
     settings: ['DIRETRIZES DO CANAL', 'Faça todo agente soar como você.', 'Configuração']
   };
   let currentView = 'overview';
@@ -147,7 +146,6 @@
     cmds.push(
       action('Estúdio de Produção', 'Abrir estúdio de roteiro, blocos de narração, prompts e upload', '#generate-button', 'producao estúdio roteiro narracao workflow'),
       action('Adicionar ideia ao banco', 'Salvar um tema para depois', '#add-idea-button', 'ideia backlog tema topic'),
-      action('Executar teste de prontidão', 'Comprovar o caminho de produção', '#run-readiness-button', 'prontidao readiness teste verify check'),
       ui.state?.system?.automationPaused
         ? action('Retomar automação', 'Despausar o agendador', '#automation-toggle', 'retomar unpause automacao play')
         : action('Pausar automação', 'Pausar a geração agendada', '#automation-toggle', 'pausar automacao stop pause'),

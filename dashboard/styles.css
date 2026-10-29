@@ -4203,10 +4203,11 @@ body.scrolled .topbar { border-color: rgba(151, 167, 195, .32); }
 }
 
 .cortes-mode-header-card {
-  display: none;
+  display: none !important;
 }
 
-#workflow-view.studio-mode-cortes .cortes-mode-header-card {
+#workflow-view.studio-mode-cortes .cortes-mode-header-card:not(.hidden),
+.cortes-mode-header-card:not(.hidden) {
   display: flex !important;
 }
 
@@ -4631,5 +4632,15 @@ body.scrolled .topbar { border-color: rgba(151, 167, 195, .32); }
   margin-top: 4px;
 }
 
+.chip-preset-edit-time,
+.chip-preset-ask-time {
+  transition: all 0.15s ease;
+}
 
-
+.chip-preset-edit-time:hover,
+.chip-preset-ask-time:hover {
+  background: rgba(239, 68, 68, 0.28) !important;
+  border-color: rgba(239, 68, 68, 0.6) !important;
+  color: #fff !important;
+  transform: translateY(-1px);
+}

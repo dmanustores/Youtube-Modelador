@@ -966,7 +966,7 @@ Retorne ESTRITAMENTE um JSON válido com a seguinte estrutura:
     }
 
     const prompt = isRecovery
-      ? `Você é um diretor executivo sênior de audiência e recuperação de canais do YouTube, especializado em canais cristãos, espiritualidade católica e mistérios bíblicos.
+      ? `Você é um diretor executivo sênior de audiência e produção de documentários do YouTube, especializado em canais cristãos, espiritualidade católica e mistérios bíblicos.
 O canal "Preghiere di Fede Quotidiane" experimentou grandes picos de engajamento no passado, mas sofreu recentemente uma queda perceptível de visibilidade.
 
 ANALISE OS DADOS HISTÓRICOS REAIS DO CANAL:
@@ -981,16 +981,22 @@ CAMPO A (RESUMO E RESTRIÇÕES DO ROTEIRO ANTERIOR - NÃO REPETIR):
 ${fieldAHistory ? fieldAHistory : 'Nenhum histórico restritivo anterior fornecido.'}
 
 CONTEXTO DO CANAL:
-${channelContext.goal ? `Objetivo: ${channelContext.goal}` : 'Canal devocional católico, orações diárias e revelações bíblicas profundas.'}
+${channelContext.goal ? `Objetivo: ${channelContext.goal}` : 'Canal devocional católico, orações profundas, exegese bíblica e documentários de alta imersão.'}
 ${channelContext.audience ? `Público: ${channelContext.audience}` : 'Pessoas de fé católica de língua italiana em busca de paz, revelação e intimidade com Deus.'}
+
+⚠️ REGRA EDITORIAL SUPREMA E INVIOLÁVEL DO CANAL:
+1. ESTE CANAL PRODUZ EXCLUSIVAMENTE VÍDEOS LONGOS (DOCUMENTÁRIOS INVESTIGATIVOS, HISTÓRIAS PROFUNDAS E NARRATIVAS COMPLETAS DE 8 A 15 MINUTOS / 10.000 CARACTERES).
+2. OS CORTES (SHORTS) SÃO FEITOS E EXTRAÍDOS POSTERIORMENTE EM CIMA DOS VÍDEOS LONGOS.
+3. PARA IDEIAS DE TEMAS, VOCÊ NUNCA DEVE BASEAR A CONFECÇÃO DE UM SHORT!
+4. MESMO AO ANALISAR OS CORTES/SHORTS EM ALTA DO CANAL (PARA CAPTURAR TEMAS, MÉTRICAS E GANCHOS EMOCIONAIS QUE O PÚBLICO AMA), VOCÊ DEVE ANALISAR O TEMA E AS MÉTRICAS E GERAR UMA HISTÓRIA LONGA COMPLETA RELACIONADA ÀQUILO. JAMAIS UM VÍDEO PEQUENO DE CORTE.
+5. NÃO COLOQUE NENHUMA HASHTAG DE SHORTS (#shorts, #short, etc.) NOS TÍTULOS.
+6. O CAMPO "format" DEVE SER SEMPRE "Documentario" OU "História". NUNCA "Short".
 
 DIAGNÓSTICO E MISSÃO DE RECUPERAÇÃO:
 1. Examine os picos do canal:
-   - Nos Shorts (até 4,5k views): O que explodiu foram chamadas emocionais diretas em primeira pessoa ("Me vas a dejar hablando solo?", "Esta oração de 30 segundos...", "Este mensaje no es casualidad"), contato visual direto de Jesus com o fiel e promessa imediata de alívio, paz e proteção.
-   - Nos Vídeos Longos (até 752 views): O que explodiu foram temas de "Rivelazione", o mistério de identidade pessoal ("Il mese in cui sei nato svela la tua missione"), segredos proféticos do Apocalipse e palavras originais hebraicas/gregas (Laqach, Aphes).
-2. Diagnostique a queda recente: O canal se afastou desses ganchos existenciais e postou temas mais formais ou genéricos.
-3. Crie exatamente ${targetCount} NOVOS TEMAS DE RECUPERAÇÃO DE ALTA TRAÇÃO:
-   - Resgate a essência dos campeões (revelação de mistérios bíblicos, orações diretas de alto impacto, palavras originais com revelação existencial).
+   - Identifique os temas, sentimentos, mistérios bíblicos e necessidades espirituais que explodiram em visualizações e engajamento.
+2. Crie exatamente ${targetCount} NOVOS TEMAS DE RECUPERAÇÃO DE ALTA TRAÇÃO NO FORMATO VÍDEO LONGO:
+   - Transforme essas métricas e ganchos validados em grandes documentários ou histórias explicativas profundas.
    - Não repita os mesmos títulos já publicados.
    - Respeite as restrições do Campo A.
    - IDIOMA OBRIGATÓRIO: TODOS os temas, títulos, ganchos e justificativas DEVEM estar no idioma ${targetLangName}.
@@ -1002,16 +1008,16 @@ Retorne ESTRITAMENTE um JSON válido:
   "themes": [
     {
       "index": 1,
-      "topic": "Título magnético no idioma ${targetLangName}",
-      "hookAngle": "Gancho dos primeiros 5 segundos com quebra de padrão, pergunta provocativa ou oração direta",
-      "whyBetter": "Como este tema resgata a audiência dos vídeos mais populares e reativa as recomendações do YouTube",
-      "format": "Short | Documentario",
-      "benchmarkRef": "Gatilho de sucesso resgatado (ex: Estilo 'Rivelazione' / Oração Direta 30s)",
+      "topic": "Título magnético para VÍDEO LONGO no idioma ${targetLangName}",
+      "hookAngle": "Gancho dos primeiros 15 segundos da narrativa longa com quebra de padrão, pergunta provocativa ou enigma textual",
+      "whyBetter": "Como este tema longo resgata a audiência dos vídeos mais populares e reativa as recomendações do YouTube",
+      "format": "Documentario",
+      "benchmarkRef": "Gatilho de sucesso resgatado transposto para história longa",
       "estimatedRetentionAppeal": "Extremo"
     }
   ]
 }`
-      : `Você é um diretor sênior de estratégia de conteúdo do YouTube focado em alta retenção e crescimento orgânico de canal.
+      : `Você é um diretor sênior de estratégia de conteúdo do YouTube focado em alta retenção e crescimento orgânico de canal através de VÍDEOS LONGOS.
 Analise os vídeos publicados recentemente no canal do YouTube durante a janela dos últimos ${days} dias:
 
 VÍDEOS PUBLICADOS NO PERÍODO:
@@ -1024,8 +1030,15 @@ CONTEXTO DO CANAL:
 ${channelContext.goal ? `Objetivo: ${channelContext.goal}` : ''}
 ${channelContext.audience ? `Público: ${channelContext.audience}` : ''}
 
+⚠️ REGRA EDITORIAL SUPREMA E INVIOLÁVEL:
+1. ESTE CANAL PRODUZ EXCLUSIVAMENTE VÍDEOS LONGOS (DOCUMENTÁRIOS INVESTIGATIVOS E NARRATIVAS DE 8 A 15 MINUTOS / 10.000 CARACTERES).
+2. OS CORTES SÃO EXTRAÍDOS DEPOIS EM CIMA DESSES VÍDEOS LONGOS.
+3. NUNCA BASEIE A CONFECÇÃO DE UM SHORT. TODA IDEIA DEVE SER CONCEBIDA PARA UMA HISTÓRIA LONGA.
+4. NÃO COLOQUE HASHTAGS DE SHORTS NOS TÍTULOS.
+5. O FORMATO DEVE SER SEMPRE "Documentario" OU "História".
+
 SUA MISSÃO:
-Gere exatamente ${targetCount} novos temas/ângulos de vídeos que sejam:
+Gere exatamente ${targetCount} novos temas/ângulos de VÍDEOS LONGOS que sejam:
 1. DIFERENTES e SUPERIORES aos vídeos já publicados (encontre lacunas de curiosidade, dúvidas frequentes não respondidas, desmistificações e ângulos de alto impacto).
 2. NUNCA repita os mesmos temas ou ganchos já usados.
 3. Respeite todas as proibições e restrições informadas no Campo A.
@@ -1038,10 +1051,10 @@ Retorne ESTRITAMENTE um JSON válido no seguinte formato:
   "themes": [
     {
       "index": 1,
-      "topic": "Tema conciso e direto no idioma alvo",
-      "hookAngle": "Ângulo de curiosidade/quebra de padrão do gancho inicial",
-      "whyBetter": "Por que este tema é superior e como ele complementa o canal sem repetir o que já foi postado",
-      "format": "Short | Documentario",
+      "topic": "Tema conciso e direto para VÍDEO LONGO no idioma alvo",
+      "hookAngle": "Ângulo de curiosidade/quebra de padrão do gancho inicial para história longa",
+      "whyBetter": "Por que este tema longo é superior e como ele complementa o canal sem repetir o que já foi postado",
+      "format": "Documentario",
       "estimatedRetentionAppeal": "Alto | Extremo"
     }
   ]
@@ -1050,9 +1063,29 @@ Retorne ESTRITAMENTE um JSON válido no seguinte formato:
     try {
       const response = await this.aiText.generateText(prompt, { maxTokens: 2500, temperature: 0.7 });
       const parsed = this.parseJsonSafe(response);
-      const themes = Array.isArray(parsed?.themes) ? parsed.themes : [];
+      const rawThemes = Array.isArray(parsed?.themes) ? parsed.themes : [];
 
-      if (themes.length > 0) {
+      if (rawThemes.length > 0) {
+        // Garantir que todos os temas sejam higienizados para VÍDEOS LONGOS
+        const sanitizedThemes = rawThemes.map(t => {
+          let cleanTopic = (t.topic || '')
+            .replace(/#shorts?/gi, '')
+            .replace(/#dio/gi, '')
+            .replace(/#gesu/gi, '')
+            .replace(/#preghiera/gi, '')
+            .replace(/\s{2,}/g, ' ')
+            .trim();
+          let format = t.format || 'Documentario';
+          if (format.toLowerCase() === 'short') {
+            format = 'Documentario';
+          }
+          return {
+            ...t,
+            topic: cleanTopic,
+            format
+          };
+        });
+
         return {
           success: true,
           language,
@@ -1062,7 +1095,7 @@ Retorne ESTRITAMENTE um JSON válido no seguinte formato:
           topVideosFound: topVideos.length,
           diagnosis: parsed.diagnosis || parsed.analysis || 'Diagnóstico concluído.',
           analysis: parsed.diagnosis || parsed.analysis || 'Análise concluída.',
-          themes: themes.slice(0, targetCount)
+          themes: sanitizedThemes.slice(0, targetCount)
         };
       }
     } catch (err) {
@@ -1074,23 +1107,22 @@ Retorne ESTRITAMENTE um JSON válido no seguinte formato:
 
   generateFallbackThemes(targetCount, language, existingVideos, strategyMode = 'recovery', topVideos = []) {
     const isItalian = String(language).toLowerCase().startsWith('it');
-    const isSpanish = String(language).toLowerCase().startsWith('es');
 
     const italianRecoveryThemes = [
       {
         topic: "Rivelazione 🌟 I 3 Salmi di Protezione che spezzano ogni angoscia notturna: il patto segreto",
         hookAngle: "Se ti svegli spesso tra le 3 e le 4 del mattino, questa non è una coincidenza. C'è un patto nei Salmi che pochi conoscono.",
-        whyBetter: "Resgata a fórmula do campeão 'Rivelazione' (752 views) com foco em proteção espiritual e oração noturna.",
+        whyBetter: "Resgata a fórmula do campeão 'Rivelazione' (752 views) com foco em proteção espiritual e oração noturna profunda.",
         format: "Documentario",
         benchmarkRef: "Estilo Rivelazione (Pico Histórico de Longos)",
         estimatedRetentionAppeal: "Extremo"
       },
       {
-        topic: "Me vas a dejar hablando solo? 🥺 Gesù bussa alla tua porta prima di questa notte",
-        hookAngle: "Hai dato retta a mille notifiche oggi... mi dedicherai solo 30 secondi prima di chiudere gli occhi?",
-        whyBetter: "Fórmula exata do campeão de Shorts com 3,8k views: apelo emocional direto de Jesus em 1ª pessoa.",
-        format: "Short",
-        benchmarkRef: "Short Campeão (3.8k views)",
+        topic: "La Notte del Getsemani: Il Mistero delle Parole Inedite che Gesù Sussurrò nel Buio",
+        hookAngle: "Nel buio più denso della storia umana, Gesù non pronunciò solo parole di rassegnazione. C'è un'invocazione aramaica documentata che la teologia moderna ha messo da parte.",
+        whyBetter: "Transpõe o apelo emocional e a intimidade com Cristo para uma narrativa histórica e teológica densa de 12 minutos.",
+        format: "Documentario",
+        benchmarkRef: "Intimidade com Cristo transposta para Longo",
         estimatedRetentionAppeal: "Extremo"
       },
       {
@@ -1102,11 +1134,11 @@ Retorne ESTRITAMENTE um JSON válido no seguinte formato:
         estimatedRetentionAppeal: "Extremo"
       },
       {
-        topic: "Questa preghiera di 30 secondi scioglie ogni catena: ripetila con me adesso 🙏",
-        hookAngle: "Metti la mano sul cuore e fai un respiro profondo. Il Signore ha visto la tua fatica di oggi.",
-        whyBetter: "Fórmula do Short com 4,5k views: oração direta com promessa de alívio instantâneo.",
-        format: "Short",
-        benchmarkRef: "Short Campeão #1 (4.5k views)",
+        topic: "La Liturgia Segreta del Tempio di Gerusalemme: Come i Sacerdoti Scioglievano i Blocchi della Fede",
+        hookAngle: "Prima che il velo del tempio si squarciasse, i leviti compivano un rito quotidiano di liberazione che prefigurava la grazia.",
+        whyBetter: "Transpõe a busca por alívio espiritual imediato em uma profunda reconstrução arqueológica e documental.",
+        format: "Documentario",
+        benchmarkRef: "Arqueologia Bíblica e Oração Profunda",
         estimatedRetentionAppeal: "Extremo"
       },
       {
@@ -1118,11 +1150,11 @@ Retorne ESTRITAMENTE um JSON válido no seguinte formato:
         estimatedRetentionAppeal: "Alto"
       },
       {
-        topic: "Questo messaggio non è una coincidenza: Dio ha ascoltato la tua preghiera silenziosa",
-        hookAngle: "Stavi per cedere oggi, vero? Fermati un secondo, perché questa parola è arrivata esattamente al momento giusto.",
-        whyBetter: "Fórmula do vídeo campeão 'Este Mensaje No Es Casualidad' (3.3k views).",
-        format: "Short",
-        benchmarkRef: "Quebra de Padrão Existencial",
+        topic: "Il Mistero della Provvidenza Nascosta: Quando Dio Opera a Distanza Senza che Tu Te ne Accorga",
+        hookAngle: "Stavi per cedere davanti all'ennesima porta chiusa? I testi sacri documentano che i più grandi interventi divini avvengono mentre tutto tace.",
+        whyBetter: "Converte o formato de quebra de padrão existencial em uma reflexão consolatória estruturada em atos narrativos.",
+        format: "Documentario",
+        benchmarkRef: "Quebra de Padrão Existencial em História Longa",
         estimatedRetentionAppeal: "Extremo"
       },
       {

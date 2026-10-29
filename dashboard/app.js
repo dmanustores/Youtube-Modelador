@@ -4479,6 +4479,9 @@ function clearDownstreamProductionData() {
  */
 function resetWorkflowStudio({ keepFieldA = true, preserveTopic = '', preserveLog = false, notify = true } = {}) {
   // 1. Resetar Estado Interno
+  wfState.currentThemeId = null;
+  wfState.scheduledDate = null;
+  wfState.scheduledTime = null;
   wfState.script = null;
   wfState.narrationBlocks = [];
   wfState.googleFlowPrompts = [];
@@ -4826,9 +4829,9 @@ function renderWorkflowPlannedThemes(themes, filter = 'all', formatFilter = 'all
         <div>
           <!-- Linha superior de Data e Status -->
           <div class="theme-card-date-row">
-            <span class="theme-date-badge" title="Data prevista de postagem">
-              📅 ${escapeHTML(dateFormatted)}
-              <button type="button" data-edit-theme-date="${escapeHTML(t.id)}" data-theme-title="${escapeHTML(t.topic)}" data-current-date="${escapeHTML(t.scheduled_date || '')}" title="Editar data de postagem">✏️</button>
+            <span class="theme-date-badge" title="${isPosted ? 'Data de postagem no YouTube' : 'Data e horário previstos de postagem'}" ${isPosted ? 'style="background: rgba(16, 185, 129, 0.12); color: #34d399; border-color: rgba(16, 185, 129, 0.3);"' : ''}>
+              📅 ${escapeHTML(dateFormatted)}${t.scheduled_time ? ` · ⏰ ${escapeHTML(t.scheduled_time)}` : ''}
+              ${!isPosted ? `<button type="button" data-edit-theme-date="${escapeHTML(t.id)}" data-theme-title="${escapeHTML(t.topic)}" data-current-date="${escapeHTML(t.scheduled_date || '')}" data-current-time="${escapeHTML(t.scheduled_time || '')}" title="Editar data e horário de postagem">✏️</button>` : ''}
             </span>
             <div class="theme-status-selector-wrap">
               <select class="theme-status-select ${escapeHTML(t.status || 'pending')} status-${escapeHTML(t.status || 'pending')}" data-change-theme-status="${escapeHTML(t.id)}" title="Escolha o status do tema">
@@ -4873,6 +4876,11 @@ function renderWorkflowPlannedThemes(themes, filter = 'all', formatFilter = 'all
           <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
             ${isPosted 
               ? `
+                ${(t.published_url || t.publishedUrl) ? `
+                  <a href="${escapeHTML(t.published_url || t.publishedUrl)}" target="_blank" rel="noopener noreferrer" class="button ghost small" style="font-size: 11px; color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.4); background: rgba(239, 68, 68, 0.08); text-decoration: none; display: inline-flex; align-items: center; gap: 4px;" title="Abrir vídeo no YouTube">
+                    ▶️ Ver no YouTube
+                  </a>
+                ` : ''}
                 <button type="button" class="button ghost small wf-theme-txt-btn" data-theme-id="${escapeHTML(t.id)}" data-theme-topic="${escapeHTML(t.topic)}" style="font-size: 11px; color: #10b981; border: 1px solid rgba(16, 185, 129, 0.35); background: rgba(16, 185, 129, 0.08);" title="Visualizar ou baixar arquivo TXT com todos os dados usados nesta produção">
                   📄 Log TXT
                 </button>
@@ -5080,6 +5088,7 @@ $('#wf-manual-theme-form')?.addEventListener('submit', async (e) => {
   const fullScript = $('#wf-manual-full-script')?.value?.trim() || null;
   const format = $('#wf-manual-format')?.value || 'explainer';
   const scheduledDate = $('#wf-manual-date')?.value;
+  const scheduledTime = $('#wf-manual-time')?.value || null;
 
   if (!topic) return;
 
@@ -5094,6 +5103,7 @@ $('#wf-manual-theme-form')?.addEventListener('submit', async (e) => {
       fullScript,
       format,
       scheduledDate,
+      scheduledTime: scheduledTime ? scheduledTime.trim() : null,
       status: 'pending'
     }, successMsg);
 
@@ -5113,24 +5123,77 @@ $('#wf-manual-theme-form')?.addEventListener('submit', async (e) => {
   }
 });
 
-// Modal de alteração de data
+// Modal de alteração de data e horário
 $('#wf-edit-date-form')?.addEventListener('submit', async (e) => {
   e.preventDefault();
   const dialog = $('#wf-edit-date-dialog');
   const themeId = $('#wf-edit-date-theme-id')?.value;
   const newDate = $('#wf-edit-date-input')?.value;
+  const newTime = $('#wf-edit-time-input')?.value;
 
   if (!themeId || !newDate) return;
 
   try {
     await mutate(`/api/workflow/planned-themes/${encodeURIComponent(themeId)}`, 'PATCH', {
-      scheduledDate: newDate
-    }, 'Data de postagem atualizada!');
+      scheduledDate: newDate,
+      scheduledTime: newTime ? newTime.trim() : null
+    }, 'Data e horário de postagem atualizados!');
 
     dialog?.close();
     await loadWorkflowPlannedThemes();
   } catch (err) {
-    showToast(`Erro ao atualizar data: ${err.message}`, 'error');
+    showToast(`Erro ao atualizar data e horário: ${err.message}`, 'error');
+  }
+});
+
+// Modal de pergunta do horário de postagem (ao clicar em Produzir Roteiro pela 1ª vez)
+$('#wf-ask-post-time-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const dialog = $('#wf-ask-post-time-dialog');
+  const themeId = $('#wf-ask-time-theme-id')?.value;
+  const chosenTime = $('#wf-ask-time-input')?.value?.trim();
+
+  if (!themeId || !chosenTime) return;
+
+  const currentTheme = (Array.isArray(wfPlannedThemes) ? wfPlannedThemes : []).find(t => t.id === themeId);
+
+  try {
+    await mutate(`/api/workflow/planned-themes/${encodeURIComponent(themeId)}`, 'PATCH', {
+      scheduledTime: chosenTime
+    }, `⏰ Horário de postagem memorizado: ${chosenTime}!`);
+
+    if (currentTheme) {
+      currentTheme.scheduled_time = chosenTime;
+    }
+
+    dialog?.close();
+    await loadWorkflowPlannedThemes();
+
+    if (currentTheme) {
+      applyThemeToWorkflowStudio(currentTheme, {
+        topic: currentTheme.topic,
+        angle: currentTheme.hook_angle,
+        format: currentTheme.format
+      });
+    }
+  } catch (err) {
+    showToast(`Erro ao memorizar horário: ${err.message}`, 'error');
+  }
+});
+
+// Atalhos rápidos de clique de horário nos modais
+document.addEventListener('click', (e) => {
+  const presetEditBtn = e.target.closest('.chip-preset-edit-time');
+  if (presetEditBtn) {
+    const timeInput = $('#wf-edit-time-input');
+    if (timeInput) timeInput.value = presetEditBtn.dataset.setTime;
+    return;
+  }
+  const presetAskBtn = e.target.closest('.chip-preset-ask-time');
+  if (presetAskBtn) {
+    const timeInput = $('#wf-ask-time-input');
+    if (timeInput) timeInput.value = presetAskBtn.dataset.setTime;
+    return;
   }
 });
 
@@ -5205,6 +5268,98 @@ $('#wf-deduplicate-themes-btn')?.addEventListener('click', async () => {
   }
 });
 
+// Aplica tema planejado selecionado ao estúdio (roteiro, agendamento e blocos)
+function applyThemeToWorkflowStudio(currentTheme, { topic, angle, format }) {
+  if (ui.currentView !== 'workflow') {
+    switchView('workflow');
+  }
+
+  // Limpa automaticamente todos os dados residuais da produção anterior
+  resetWorkflowStudio({ keepFieldA: true, preserveTopic: topic, notify: false });
+
+  const topicInput = $('#wf-script-topic');
+  const angleInput = $('#wf-script-angle');
+  const formatSelect = $('#wf-script-format');
+
+  if (topicInput) topicInput.value = topic || '';
+  if (angleInput) angleInput.value = angle || '';
+  if (formatSelect && format) {
+    const opt = formatSelect.querySelector(`option[value="${format.toLowerCase()}"]`);
+    if (opt) formatSelect.value = format.toLowerCase();
+  }
+
+  // Memoriza o tema atual em produção e seu agendamento no estado do estúdio
+  wfState.currentThemeId = currentTheme?.id || null;
+  wfState.scheduledDate = currentTheme?.scheduled_date || null;
+  wfState.scheduledTime = currentTheme?.scheduled_time || null;
+
+  // Preenche automaticamente o campo de agendamento de upload (Data e Horário)
+  if (currentTheme?.scheduled_date) {
+    const timeInput = $('#wf-upload-time');
+    if (timeInput) {
+      const timePart = currentTheme.scheduled_time ? currentTheme.scheduled_time.slice(0, 5) : '18:00';
+      timeInput.value = `${currentTheme.scheduled_date}T${timePart}`;
+    }
+  }
+
+  if (currentTheme && currentTheme.status === 'pending') {
+    mutate(`/api/workflow/planned-themes/${encodeURIComponent(currentTheme.id)}`, 'PATCH', {
+      status: 'in_production'
+    }, `Tema em produção: "${topic}"`)
+      .then(() => loadWorkflowPlannedThemes())
+      .catch(() => {});
+  }
+
+  // Se o tema já possui roteiro total construído externamente:
+  if (currentTheme && currentTheme.full_script) {
+    let blocks = [];
+    if (currentTheme.narration_blocks) {
+      try {
+        blocks = typeof currentTheme.narration_blocks === 'string'
+          ? JSON.parse(currentTheme.narration_blocks)
+          : currentTheme.narration_blocks;
+      } catch (e) {
+        blocks = [];
+      }
+    }
+    if (!Array.isArray(blocks) || blocks.length === 0) {
+      const clean = currentTheme.full_script.trim();
+      const half = Math.floor(clean.length / 2);
+      blocks = [
+        { index: 1, title: 'Bloco 1', charCount: half, text: clean.slice(0, half).trim() },
+        { index: 2, title: 'Bloco 2', charCount: clean.length - half, text: clean.slice(half).trim() }
+      ];
+    }
+
+    wfState.script = {
+      topic: currentTheme.topic,
+      hook: currentTheme.hook_angle || '',
+      fullScript: currentTheme.full_script,
+      totalCharacters: currentTheme.script_char_count || currentTheme.full_script.length,
+      part1Chars: blocks[0]?.charCount || 0,
+      part2Chars: blocks[1]?.charCount || 0,
+      officialBible: 'Bibbia CEI 2008 (Construído Externamente)',
+      hookType: 'Roteiro Total Externo',
+      narrationBlocks: blocks
+    };
+
+    renderWorkflowScript(wfState.script);
+    renderNarrationBlocks(blocks);
+
+    const panel = $('#wf-step-3-panel') || $('#wf-narration-blocks-container');
+    panel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    scheduleAutoSaveDraft(100);
+    const timeNotice = currentTheme.scheduled_time ? ` · ⏰ ${currentTheme.scheduled_time}` : '';
+    showToast(`Roteiro pronto carregado (${(currentTheme.script_char_count || currentTheme.full_script.length).toLocaleString()} carac.)! Agendado: ${formatScheduleDate(currentTheme.scheduled_date)}${timeNotice}.`, 'success');
+    return;
+  }
+
+  scheduleAutoSaveDraft(100);
+  topicInput?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const timeNotice = currentTheme?.scheduled_time ? ` (Agendado às ${currentTheme.scheduled_time})` : '';
+  showToast(`Tema preenchido para o Roteiro: "${topic}"${timeNotice}.`, 'success');
+}
+
 // Cliques gerais da Etapa 1 (Filtros, Alternar Status, Editar Data, Excluir, Produzir e Exportar)
 document.addEventListener('click', (e) => {
   const filterTab = e.target.closest('[data-filter-status]');
@@ -5249,12 +5404,20 @@ document.addEventListener('click', (e) => {
   const editDateBtn = e.target.closest('[data-edit-theme-date]');
   if (editDateBtn) {
     const themeId = editDateBtn.dataset.editThemeDate;
+    const targetTheme = (Array.isArray(wfPlannedThemes) ? wfPlannedThemes : []).find(t => t.id === themeId);
+    if (targetTheme && targetTheme.status === 'posted') {
+      showToast('Vídeos já postados não podem ter data ou horário alterados.', 'warning');
+      return;
+    }
+
     const themeTitle = editDateBtn.dataset.themeTitle;
     const currentDate = editDateBtn.dataset.currentDate;
+    const currentTime = editDateBtn.dataset.currentTime;
 
     $('#wf-edit-date-theme-id').value = themeId || '';
     $('#wf-edit-date-theme-title').textContent = themeTitle || '';
     $('#wf-edit-date-input').value = currentDate || new Date().toISOString().split('T')[0];
+    $('#wf-edit-time-input').value = currentTime || '';
 
     $('#wf-edit-date-dialog')?.showModal();
     return;
@@ -5285,83 +5448,39 @@ document.addEventListener('click', (e) => {
 
   const usePlannedBtn = e.target.closest('[data-use-planned-theme]');
   if (usePlannedBtn) {
-    if (ui.currentView !== 'workflow') {
-      switchView('workflow');
-    }
     const themeId = usePlannedBtn.dataset.usePlannedTheme;
     const topic = usePlannedBtn.dataset.themeTopic;
     const angle = usePlannedBtn.dataset.themeAngle;
     const format = usePlannedBtn.dataset.themeFormat;
 
-    // Limpa automaticamente todos os dados residuais da produção anterior
-    resetWorkflowStudio({ keepFieldA: true, preserveTopic: topic, notify: false });
+    const currentTheme = (Array.isArray(wfPlannedThemes) ? wfPlannedThemes : []).find(t => t.id === themeId);
 
-    const topicInput = $('#wf-script-topic');
-    const angleInput = $('#wf-script-angle');
-    const formatSelect = $('#wf-script-format');
-
-    if (topicInput) topicInput.value = topic || '';
-    if (angleInput) angleInput.value = angle || '';
-    if (formatSelect && format) {
-      const opt = formatSelect.querySelector(`option[value="${format.toLowerCase()}"]`);
-      if (opt) formatSelect.value = format.toLowerCase();
-    }
-
-    const currentTheme = wfPlannedThemes.find(t => t.id === themeId);
-    if (currentTheme && currentTheme.status === 'pending') {
-      mutate(`/api/workflow/planned-themes/${encodeURIComponent(themeId)}`, 'PATCH', {
-        status: 'in_production'
-      }, `Tema em produção: "${topic}"`)
-        .then(() => loadWorkflowPlannedThemes())
-        .catch(() => {});
-    }
-
-    // Se o tema já possui roteiro total construído externamente:
-    if (currentTheme && currentTheme.full_script) {
-      let blocks = [];
-      if (currentTheme.narration_blocks) {
-        try {
-          blocks = typeof currentTheme.narration_blocks === 'string'
-            ? JSON.parse(currentTheme.narration_blocks)
-            : currentTheme.narration_blocks;
-        } catch (e) {
-          blocks = [];
-        }
-      }
-      if (!Array.isArray(blocks) || blocks.length === 0) {
-        const clean = currentTheme.full_script.trim();
-        const half = Math.floor(clean.length / 2);
-        blocks = [
-          { index: 1, title: 'Bloco 1', charCount: half, text: clean.slice(0, half).trim() },
-          { index: 2, title: 'Bloco 2', charCount: clean.length - half, text: clean.slice(half).trim() }
-        ];
-      }
-
-      wfState.script = {
-        topic: currentTheme.topic,
-        hook: currentTheme.hook_angle || '',
-        fullScript: currentTheme.full_script,
-        totalCharacters: currentTheme.script_char_count || currentTheme.full_script.length,
-        part1Chars: blocks[0]?.charCount || 0,
-        part2Chars: blocks[1]?.charCount || 0,
-        officialBible: 'Bibbia CEI 2008 (Construído Externamente)',
-        hookType: 'Roteiro Total Externo',
-        narrationBlocks: blocks
-      };
-
-      renderWorkflowScript(wfState.script);
-      renderNarrationBlocks(blocks);
-
-      const panel = $('#wf-step-3-panel') || $('#wf-narration-blocks-container');
-      panel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      scheduleAutoSaveDraft(100);
-      showToast(`Roteiro pronto carregado (${(currentTheme.script_char_count || currentTheme.full_script.length).toLocaleString()} carac.)! Blocos de narração disponíveis para cópia.`, 'success');
+    // REGRA DE SEGURANÇA: Casos JÁ POSTADOS jamais solicitam nem alteram horário
+    if (currentTheme && currentTheme.status === 'posted') {
+      applyThemeToWorkflowStudio(currentTheme, { topic, angle, format });
       return;
     }
 
-    scheduleAutoSaveDraft(100);
-    topicInput?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    showToast(`Tema preenchido para o Roteiro: "${topic}".`, 'success');
+    // REGRA SOLICITADA: O questionamento do horário ocorre ESTRITAMENTE para casos PENDENTES que vão para produção
+    const isPending = !currentTheme?.status || currentTheme?.status === 'pending';
+    const hasRecordedTime = currentTheme && currentTheme.scheduled_time && String(currentTheme.scheduled_time).trim().length >= 4;
+
+    if (isPending && !hasRecordedTime) {
+      // NÃO POSSUI HORÁRIO AINDA E ESTÁ PENDENTE: questiona o usuário pela 1ª vez
+      const askDialog = $('#wf-ask-post-time-dialog');
+      if (askDialog) {
+        $('#wf-ask-time-theme-id').value = themeId;
+        $('#wf-ask-time-theme-title').textContent = topic || currentTheme?.topic || 'Tema Selecionado';
+        const dateText = currentTheme?.scheduled_date ? formatScheduleDate(currentTheme.scheduled_date) : 'Sem data definida';
+        $('#wf-ask-time-date-notice').textContent = `📅 Data prevista no cronograma: ${dateText}`;
+        $('#wf-ask-time-input').value = '18:00';
+        askDialog.showModal();
+        return;
+      }
+    }
+
+    // JÁ INSERIU A HORA OU JÁ ESTÁ EM PRODUÇÃO: não pergunta de novo!
+    applyThemeToWorkflowStudio(currentTheme, { topic, angle, format });
     return;
   }
 
@@ -6548,14 +6667,19 @@ function pullSEODataIntoSchedule() {
     pulledCount++;
   }
 
-  // Data sugerida: Se houver tema planejado selecionado ou data vazia, definir amanhã 18:00
+  // Data sugerida: Se houver tema planejado com data/horário memorizado, usar diretamente!
   const timeInput = $('#wf-upload-time');
-  if (timeInput && !timeInput.value) {
-    const nextDate = new Date();
-    nextDate.setDate(nextDate.getDate() + 1);
-    nextDate.setHours(18, 0, 0, 0);
-    const localIso = new Date(nextDate.getTime() - nextDate.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
-    timeInput.value = localIso;
+  if (timeInput) {
+    if (wfState.scheduledDate) {
+      const timePart = wfState.scheduledTime ? wfState.scheduledTime.slice(0, 5) : '18:00';
+      timeInput.value = `${wfState.scheduledDate}T${timePart}`;
+    } else if (!timeInput.value) {
+      const nextDate = new Date();
+      nextDate.setDate(nextDate.getDate() + 1);
+      nextDate.setHours(18, 0, 0, 0);
+      const localIso = new Date(nextDate.getTime() - nextDate.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+      timeInput.value = localIso;
+    }
   }
 
   if (pulledCount > 0) {
@@ -7445,6 +7569,7 @@ $('#wf-schedule-form')?.addEventListener('submit', async (e) => {
       containsSyntheticMedia,
       language,
       format: $('#wf-upload-format')?.value || wfCurrentUploadFormat || 'explainer',
+      themeId: wfState.currentThemeId || null,
       channelName: bundlePayload.channelName,
       script: bundlePayload.script,
       googleFlowPrompts: bundlePayload.googleFlowPrompts,
@@ -7745,8 +7870,9 @@ if (typeof restoreWorkflowDraft === 'function') {
   restoreWorkflowDraft();
 }
 
-const initialView = location.hash.slice(1);
-if (['overview', 'workflow', 'operator', 'pipeline', 'calendar', 'analytics', 'engagement', 'readiness', 'settings'].includes(initialView)) switchView(initialView);
+const rawHash = location.hash.slice(1);
+const initialView = rawHash === 'readiness' ? 'workflow' : rawHash;
+if (['overview', 'workflow', 'operator', 'pipeline', 'calendar', 'analytics', 'engagement', 'settings'].includes(initialView)) switchView(initialView);
 refreshDashboard().then(() => syncWorkflowChannel());
 setInterval(() => {
   refreshDashboard(true);
@@ -7820,12 +7946,16 @@ function setWorkflowUploadFormat(format = 'explainer') {
   const optionalThumbWrap = $('#wf-optional-thumb-trigger-wrap');
   const metaTitle = $('#wf-metadata-section-title');
   const publishTitle = $('#wf-publish-section-title');
+  const cortesBanner = $('.cortes-mode-header-card');
 
   if (format === 'short') {
     btnShort?.classList.add('active', 'primary');
     btnShort?.classList.remove('secondary');
     btnLong?.classList.remove('active', 'primary');
     btnLong?.classList.add('secondary');
+
+    // Em Shorts/Cortes, o banner de envio rápido é exibido
+    cortesBanner?.classList.remove('hidden');
 
     // Em Shorts/Cortes, o bloco de capa fica 100% oculto pois o YouTube seleciona o frame automático
     thumbCard?.classList.add('hidden');
@@ -7842,6 +7972,9 @@ function setWorkflowUploadFormat(format = 'explainer') {
     btnLong?.classList.remove('secondary');
     btnShort?.classList.remove('active', 'primary');
     btnShort?.classList.add('secondary');
+
+    // Em Vídeo Longo, o banner de cortes fica TOTALMENTE OCULTO (menos poluição visual)
+    cortesBanner?.classList.add('hidden');
 
     // Em Vídeo Longo, o bloco de capa fica visível normalmente
     thumbCard?.classList.remove('hidden');
@@ -7933,3 +8066,9 @@ $('#wf-show-optional-thumb-btn')?.addEventListener('click', () => {
   $('#wf-optional-thumb-trigger-wrap')?.classList.add('hidden');
   $('#wf-thumb-schedule-card')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
 });
+
+// Inicialização consistente do formato de upload: se não for explicitamente 'short', garante modo Vídeo Longo com banner oculto
+if (typeof wfCurrentUploadFormat === 'undefined' || wfCurrentUploadFormat !== 'short') {
+  setWorkflowUploadFormat('explainer');
+}
+
