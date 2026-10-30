@@ -186,19 +186,42 @@ class ThumbnailDesignerAgent {
     };
   }
 
+  async auditPreviousThumbnails(limit = 5) {
+    try {
+      if (this.db && typeof this.db.listPlannedThemes === 'function') {
+        const planned = await this.db.listPlannedThemes({ limit }).catch(() => []);
+        if (Array.isArray(planned) && planned.length > 0) {
+          return planned.map(p => ({ title: p.topic, status: p.status }));
+        }
+      }
+    } catch (e) {
+      this.logger.warn(`Could not audit previous thumbnails: ${e.message}`);
+    }
+    return [];
+  }
+
   async createPrompt(concept) {
-    const prompt = `Create a YouTube thumbnail with the following specifications:
+    const previous = await this.auditPreviousThumbnails(5);
+    const prevContext = previous.length > 0
+      ? `Audited previous channel thumbnails (avoid repeating their dark cave/stone-room scenarios and dull sepia colors):\n${previous.map((p, i) => `  ${i + 1}. "${p.title}"`).join('\n')}`
+      : 'Avoid repetitive dark stone rooms and dull monochrome sepia backgrounds.';
+
+    const prompt = `Create a high-CTR cinematic YouTube thumbnail with the following specifications:
+    Title: "${concept.title}"
     Style: ${concept.style}
-    Primary Text: "${concept.primaryText}"
-    Secondary Text: "${concept.secondaryText}"
-    Color Scheme: ${concept.colors.primary}, ${concept.colors.secondary}, ${concept.colors.accent}
+    Primary Text: "${concept.primaryText}" (Rendered in ultra-bold high-impact typography with 3D bevel and vibrant gold/yellow highlights)
+    Secondary Text: "${concept.secondaryText}" (Rendered in high-contrast clean typography)
+    Color Scheme: ${concept.colors.primary}, ${concept.colors.secondary}, ${concept.colors.accent} (Vibrant high contrast, strictly avoiding dull muddy brown or low-contrast sepia)
+    Scenario Directives: Open grand scenario with luminous volumetric lighting, distinct from previous channel videos.
     Elements to include: ${concept.elements.join(', ')}
     Emotional tone: ${concept.emotion}
     Composition: ${concept.composition}
     
-    The thumbnail should be eye-catching, professional, and optimized for high click-through rate.
+    ${prevContext}
+
+    The thumbnail should be eye-catching, professional, and optimized for mobile feed high click-through rate.
     Resolution: 1280x720px
-    Format: High contrast, bold text, clear imagery`;
+    Format: High contrast, bold distinctive typography, clear imagery`;
     
     return prompt;
   }

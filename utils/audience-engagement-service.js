@@ -555,7 +555,7 @@ Comments: ${JSON.stringify(payload)}`;
 
   async getSummary() {
     const [insights, pendingDrafts, pendingRecommendations] = await Promise.all([
-      this.db.listEngagementInsights({ limit: 12 }),
+      this.db.listEngagementInsights({ limit: 100 }),
       this.db.listReplyDrafts({ status: 'proposed', limit: 100 }),
       this.db.listLearningRecommendations({ status: 'pending', limit: 100 })
     ]);

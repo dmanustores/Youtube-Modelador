@@ -665,7 +665,14 @@ class Database {
       full_script: 'TEXT',
       narration_blocks: 'TEXT',
       script_char_count: 'INTEGER DEFAULT 0',
-      scheduled_time: 'TEXT'
+      scheduled_time: 'TEXT',
+      google_flow_prompts: 'TEXT',
+      nano_banana_prompts: 'TEXT',
+      seo_data: 'TEXT',
+      video_path: 'TEXT',
+      thumbnail_path: 'TEXT',
+      production_data: 'TEXT',
+      upload_error: 'TEXT'
     });
 
     // Insert default settings
@@ -2567,9 +2574,9 @@ class Database {
   }
 
   async listEngagementInsights(options = {}) {
-    const limit = Math.max(1, Math.min(50, Number(options.limit || 12)));
+    const limit = Math.max(1, Math.min(200, Number(options.limit || 50)));
     const rows = await this.getAllRows(
-      'SELECT * FROM engagement_insights ORDER BY updated_at DESC LIMIT ?',
+      'SELECT * FROM engagement_insights ORDER BY (comment_count > 0) DESC, updated_at DESC LIMIT ?',
       [limit]
     );
     return rows.map(row => this.parseEngagementInsight(row));
@@ -3009,9 +3016,21 @@ class Database {
     const narrationBlocks = theme.narrationBlocks ? (typeof theme.narrationBlocks === 'string' ? theme.narrationBlocks : JSON.stringify(theme.narrationBlocks)) : (theme.narration_blocks || null);
     const scriptCharCount = theme.scriptCharCount !== undefined ? theme.scriptCharCount : (theme.script_char_count || (fullScript ? fullScript.length : 0));
 
+    const googleFlowPrompts = theme.googleFlowPrompts !== undefined ? (typeof theme.googleFlowPrompts === 'string' ? theme.googleFlowPrompts : JSON.stringify(theme.googleFlowPrompts)) : (theme.google_flow_prompts || null);
+    const nanoBananaPrompts = theme.nanoBananaPrompts !== undefined ? (typeof theme.nanoBananaPrompts === 'string' ? theme.nanoBananaPrompts : JSON.stringify(theme.nanoBananaPrompts)) : (theme.nano_banana_prompts || null);
+    const seoData = theme.seoData !== undefined ? (typeof theme.seoData === 'string' ? theme.seoData : JSON.stringify(theme.seoData)) : (theme.seo ? JSON.stringify(theme.seo) : (theme.seo_data || null));
+    const videoPath = theme.videoPath || theme.video_path || null;
+    const thumbnailPath = theme.thumbnailPath || theme.thumbnail_path || null;
+    const productionData = theme.productionData !== undefined ? (typeof theme.productionData === 'string' ? theme.productionData : JSON.stringify(theme.productionData)) : (theme.production_data || null);
+    const uploadError = theme.uploadError || theme.upload_error || null;
+
     await this.executeQuery(
-      `INSERT INTO workflow_planned_themes (id, channel_id, topic, hook_angle, why_better, format, scheduled_date, scheduled_time, status, published_url, notes, full_script, narration_blocks, script_char_count)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO workflow_planned_themes (
+        id, channel_id, topic, hook_angle, why_better, format, scheduled_date, scheduled_time,
+        status, published_url, notes, full_script, narration_blocks, script_char_count,
+        google_flow_prompts, nano_banana_prompts, seo_data, video_path, thumbnail_path, production_data, upload_error
+       )
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         theme.channelId || null,
@@ -3026,7 +3045,14 @@ class Database {
         theme.notes || (theme.benchmarkRef ? JSON.stringify({ benchmarkRef: theme.benchmarkRef }) : null),
         fullScript,
         narrationBlocks,
-        scriptCharCount
+        scriptCharCount,
+        googleFlowPrompts,
+        nanoBananaPrompts,
+        seoData,
+        videoPath,
+        thumbnailPath,
+        productionData,
+        uploadError
       ]
     );
     return this.getRow('SELECT * FROM workflow_planned_themes WHERE id = ?', [id]);
@@ -3104,6 +3130,11 @@ class Database {
     return this.getAllRows(sql, params);
   }
 
+  async getPlannedTheme(id) {
+    if (!id) return null;
+    return this.getRow('SELECT * FROM workflow_planned_themes WHERE id = ?', [id]);
+  }
+
   async updatePlannedTheme(id, changes = {}) {
     const current = await this.getRow('SELECT * FROM workflow_planned_themes WHERE id = ?', [id]);
     if (!current) return null;
@@ -3122,13 +3153,38 @@ class Database {
     const narrationBlocks = rawNarrationBlocks ? (typeof rawNarrationBlocks === 'string' ? rawNarrationBlocks : JSON.stringify(rawNarrationBlocks)) : null;
     const scriptCharCount = changes.scriptCharCount !== undefined ? changes.scriptCharCount : (changes.script_char_count !== undefined ? changes.script_char_count : (fullScript ? fullScript.length : (current.script_char_count || 0)));
 
+    const rawGFPrompts = changes.googleFlowPrompts !== undefined ? changes.googleFlowPrompts : (changes.google_flow_prompts !== undefined ? changes.google_flow_prompts : current.google_flow_prompts);
+    const googleFlowPrompts = rawGFPrompts ? (typeof rawGFPrompts === 'string' ? rawGFPrompts : JSON.stringify(rawGFPrompts)) : null;
+
+    const rawNBPrompts = changes.nanoBananaPrompts !== undefined ? changes.nanoBananaPrompts : (changes.nano_banana_prompts !== undefined ? changes.nano_banana_prompts : current.nano_banana_prompts);
+    const nanoBananaPrompts = rawNBPrompts ? (typeof rawNBPrompts === 'string' ? rawNBPrompts : JSON.stringify(rawNBPrompts)) : null;
+
+    const rawSeoData = changes.seoData !== undefined ? changes.seoData : (changes.seo !== undefined ? changes.seo : (changes.seo_data !== undefined ? changes.seo_data : current.seo_data));
+    const seoData = rawSeoData ? (typeof rawSeoData === 'string' ? rawSeoData : JSON.stringify(rawSeoData)) : null;
+
+    const videoPath = changes.videoPath !== undefined ? changes.videoPath : (changes.video_path !== undefined ? changes.video_path : current.video_path);
+    const thumbnailPath = changes.thumbnailPath !== undefined ? changes.thumbnailPath : (changes.thumbnail_path !== undefined ? changes.thumbnail_path : current.thumbnail_path);
+
+    const rawProdData = changes.productionData !== undefined ? changes.productionData : (changes.production_data !== undefined ? changes.production_data : current.production_data);
+    const productionData = rawProdData ? (typeof rawProdData === 'string' ? rawProdData : JSON.stringify(rawProdData)) : null;
+
+    const uploadError = changes.uploadError !== undefined ? changes.uploadError : (changes.upload_error !== undefined ? changes.upload_error : current.upload_error);
+
     await this.executeQuery(
       `UPDATE workflow_planned_themes SET
         topic = ?, hook_angle = ?, why_better = ?, format = ?, scheduled_date = ?, scheduled_time = ?,
         status = ?, published_url = ?, notes = ?, full_script = ?, narration_blocks = ?,
-        script_char_count = ?, updated_at = CURRENT_TIMESTAMP
+        script_char_count = ?, google_flow_prompts = ?, nano_banana_prompts = ?, seo_data = ?,
+        video_path = ?, thumbnail_path = ?, production_data = ?, upload_error = ?,
+        updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
-      [topic, hookAngle, whyBetter, format, scheduledDate, scheduledTime, status, publishedUrl, notes, fullScript, narrationBlocks, scriptCharCount, id]
+      [
+        topic, hookAngle, whyBetter, format, scheduledDate, scheduledTime,
+        status, publishedUrl, notes, fullScript, narrationBlocks,
+        scriptCharCount, googleFlowPrompts, nanoBananaPrompts, seoData,
+        videoPath, thumbnailPath, productionData, uploadError,
+        id
+      ]
     );
 
     return this.getRow('SELECT * FROM workflow_planned_themes WHERE id = ?', [id]);

@@ -20,6 +20,7 @@
     "agent:analytics": "node agents/analytics-optimization-agent.js",
     "credentials:setup": "node utils/credential-manager.js setup",
     "youtube:switch": "node scripts/switch-youtube-account.js",
+    "youtube:test": "node scripts/test-youtube-connection.js",
     "auth:youtube": "node modern-auth.js",
     "lint": "eslint ."
   },

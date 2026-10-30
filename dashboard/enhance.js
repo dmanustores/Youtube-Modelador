@@ -12,16 +12,21 @@
   const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   const MINI_LABELS = {
-    overview: 'Início', workflow: 'Modelador', operator: 'Operador', pipeline: 'Pipeline',
-    calendar: 'Calendário', analytics: 'Estatísticas', engagement: 'Engajamento', settings: 'Configuração'
+    overview: 'Início', calendar: 'Calendário', workflow: 'Modelador',
+    engagement: 'Engajamento', analytics: 'Estatísticas', operator: 'Operador',
+    pipeline: 'Pipeline', settings: 'Configurações'
   };
   function ensureMiniLabels() {
     $$('.nav-item').forEach(item => {
-      if (!item.querySelector('.mini-label')) {
+      const existing = item.querySelector('.mini-label');
+      const text = MINI_LABELS[item.dataset.view] || item.textContent.trim();
+      if (!existing) {
         const span = document.createElement('span');
         span.className = 'mini-label';
-        span.textContent = MINI_LABELS[item.dataset.view] || item.textContent.trim();
+        span.textContent = text;
         item.appendChild(span);
+      } else if (existing.textContent !== text) {
+        existing.textContent = text;
       }
     });
   }
@@ -31,13 +36,13 @@
   /* ---------- 1. View choreography ---------- */
   const VIEW_META = {
     overview: ['VISÃO GERAL DO OPERADOR', 'Saiba o que acontece a seguir.', 'Início'],
-    workflow: ['YOUTUBE · MODELADOR', 'Youtube - Modelador', 'Youtube - Modelador'],
+    calendar: ['PLANEJAMENTO EDITORIAL', 'Planeje antes de gerar.', 'Calendário'],
+    workflow: ['YOUTUBE · MODELADOR', 'Youtube - Modelador', 'Modelador'],
+    engagement: ['ENGAJAMENTO DO PÚBLICO', 'Comentários e respostas.', 'Engajamento'],
+    analytics: ['DESEMPENHO', 'Transforme resultados nos próximos passos.', 'Estatísticas'],
     operator: ['OPERADOR AUTÔNOMO', 'Defina a estratégia para o Lumen.', 'Operador'],
     pipeline: ['OPERAÇÕES DE CONTEÚDO', 'Da ideia à publicação.', 'Pipeline'],
-    calendar: ['PLANEJAMENTO EDITORIAL', 'Planeje antes de gerar.', 'Calendário'],
-    analytics: ['DESEMPENHO', 'Transforme resultados nos próximos passos.', 'Estatísticas'],
-    engagement: ['ENGAJAMENTO DO PÚBLICO', 'Comentários e respostas.', 'Engajamento'],
-    settings: ['DIRETRIZES DO CANAL', 'Faça todo agente soar como você.', 'Configuração']
+    settings: ['DIRETRIZES DO CANAL', 'Faça todo agente soar como você.', 'Configurações']
   };
   let currentView = 'overview';
   const baseSwitchView = window.switchView;
@@ -48,7 +53,7 @@
       const previous = currentView;
       currentView = view;
       baseSwitchView(view);
-      document.title = view === 'workflow' ? 'Youtube - Modelador' : `${VIEW_META[view][2]} · Lumen`;
+      document.title = `Youtube - ${VIEW_META[view][2]}`;
       const section = $(`#${view}-view`);
       if (section) {
         // Directional slide: forward views enter from the right, back from the left.
@@ -66,11 +71,13 @@
     };
   }
 
-  // Sincroniza título na carga direta por hash
+  // Sincroniza título na carga direta por hash ou inicial
   const initialHash = (location.hash || '').replace('#', '');
   if (initialHash && VIEW_META[initialHash]) {
     currentView = initialHash;
-    document.title = initialHash === 'workflow' ? 'Youtube - Modelador' : `${VIEW_META[initialHash][2]} · Lumen`;
+    document.title = `Youtube - ${VIEW_META[initialHash][2]}`;
+  } else {
+    document.title = `Youtube - ${VIEW_META.overview[2]}`;
   }
 
   /* ---------- 2. Count-up instrumentation ---------- */

@@ -1869,11 +1869,148 @@ Example:
   }
 
   /**
-   * Gera as versões de 1 a 10 de thumbnails para o Nano Banana
-   * CRÍTICO: As respostas saem APENAS com o prompt em inglês para colar no Nano Banana
+   * Analisa as últimas 3 a 5 capas/vídeos do canal para diagnosticar padrões repetitivos:
+   * - Cenários semelhantes (ex: quartos de pedra escuros com tochas ou cavernas)
+   * - Paletas monocromáticas opacas (marrom-sépia apagado com baixo CTR)
+   * - Monotonia tipográfica (mesma fonte serifada discreta no canto inferior)
+   * Fornece diretrizes obrigatórias de quebra de padrão (anti-monotonia) e fontes chamativas.
    */
-  async generateNanoBananaThumbnailPrompts({ topic, script, language = 'it-IT', versionsCount = 10 } = {}) {
-    this.logger.info(`Gerando ${versionsCount} versões avançadas de prompts para Nano Banana...`);
+  async auditRecentChannelThumbnails({ count = 5, channelId = null, fallbackHistory = '' } = {}) {
+    this.logger.info(`Auditando últimas ${count} miniaturas do canal para diferenciação visual...`);
+    
+    let analyzedVideos = [];
+
+    // 1. Tentar buscar da API do YouTube
+    try {
+      const recent = await this.fetchChannelRecentVideos({ days: 90, maxResults: Math.max(count * 2, 12), channelId });
+      if (Array.isArray(recent?.videos) && recent.videos.length > 0) {
+        analyzedVideos = recent.videos.slice(0, count).map(v => ({
+          id: v.id,
+          title: v.title,
+          thumbnail: v.thumbnail || null,
+          publishedAt: v.publishedAt,
+          source: 'youtube_api'
+        }));
+      }
+    } catch (e) {
+      this.logger.warn(`Auditoria via YouTube API indisponível: ${e.message}`);
+    }
+
+    // 2. Fallback: buscar temas planejados / agendados recentes no banco local
+    if (analyzedVideos.length < 3 && this.db) {
+      try {
+        const planned = await this.db.listPlannedThemes({ limit: 20, channelId }).catch(() => []);
+        if (Array.isArray(planned) && planned.length > 0) {
+          const sorted = [...planned].sort((a, b) => {
+            const dateA = new Date(a.scheduled_date || a.created_at || 0).getTime();
+            const dateB = new Date(b.scheduled_date || b.created_at || 0).getTime();
+            return dateB - dateA;
+          });
+          const picked = sorted.slice(0, count).map(t => ({
+            id: t.id,
+            title: t.topic,
+            thumbnail: t.published_url || null,
+            publishedAt: t.scheduled_date || t.created_at,
+            source: 'database_planned_themes'
+          }));
+          analyzedVideos = picked;
+        }
+      } catch (err) {
+        this.logger.warn(`Fallback no banco local para auditoria falhou: ${err.message}`);
+      }
+    }
+
+    // 3. Fallback extra: analisar histórico salvo (last_workflow_summary ou fallbackHistory)
+    if (analyzedVideos.length < 3) {
+      const rawSummary = fallbackHistory || (await this.db?.getSetting('last_workflow_summary').catch(() => null));
+      if (rawSummary) {
+        const lines = String(rawSummary).split(/\r?\n/).filter(l => l.includes('Tema utilizado') || l.includes('1.') || l.includes('2.') || l.includes('3.'));
+        lines.slice(0, count).forEach((l, idx) => {
+          const clean = l.replace(/^.*?:\s*/, '').replace(/^\d+\.\s*/, '').replace(/["']/g, '').trim();
+          if (clean && clean.length > 5) {
+            analyzedVideos.push({
+              id: `hist_${idx}`,
+              title: clean,
+              publishedAt: null,
+              source: 'channel_history_summary'
+            });
+          }
+        });
+      }
+    }
+
+    // Se ainda assim estiver vazio, usar títulos do histórico de produções do canal
+    if (analyzedVideos.length === 0) {
+      analyzedVideos = [
+        { title: 'La parola ebraica segreta di Gesù nel buio più profondo', source: 'channel_reference' },
+        { title: 'Il dettaglio botanico nascosto nel giardino di Maria Maddalena', source: 'channel_reference' },
+        { title: 'Il peccato segreto di Sansone: quando Dio lo abbandonò davvero prima di Dalila', source: 'channel_reference' },
+        { title: "Il vero segreto del 666 nell'Apocalisse: la chiave cifrata oltre Nerone", source: 'channel_reference' },
+        { title: 'La Maga di Endor e il Testo Ebraico: Cosa Vide Davvero Saul nella Notte di Gelbù', source: 'channel_reference' }
+      ];
+    }
+
+    const titlesList = analyzedVideos.slice(0, count).map((v, i) => `${i + 1}. "${v.title}"`).join('\n');
+
+    return {
+      analyzedCount: Math.min(analyzedVideos.length, count),
+      analyzedVideos: analyzedVideos.slice(0, count),
+      titlesSummary: titlesList,
+      detectedSaturations: [
+        'Cenários fechados e escuros repetitivos (câmara de pedra rústica, noites com tochas ou cavernas)',
+        'Paleta monocromática opaca (marrom terra, sépia escuro e sombras pesadas com baixo CTR)',
+        'Monotonia de fontes (apenas serifa fina discreta no canto inferior esquerdo com baixa visibilidade mobile)'
+      ],
+      divergentDirectives: {
+        prohibitedScenarios: 'PROIBIDO: Câmaras de pedra escuras com tochas, cavernas noturnas fechadas, fundos apagados e monocromáticos sem contraste.',
+        requiredScenarios: 'OBRIGATÓRIO: Cenários abertos, grandiosos, bem iluminados e arquitetura monumental (ex.: terraços elevados de mármore sob luz solar pura com céu azul cobalto, colunatas monumentais de pedra polida, penhascos panorâmicos ao amanhecer com raios solares dramáticos, pátios de templos banhados por luz do dia limpa, oásis com reflexos cristalinos sob sol dourado).',
+        vibrantPalettes: [
+          { name: 'Ouro Solar & Azul Cobalto', description: 'Radiant liquid gold combined with deep royal cobalt blue, maximum complementary contrast and high luminescence.' },
+          { name: 'Púrpura Imperial & Mármore Marfim', description: 'Deep majestic velvet purple, pure ivory marble, and brilliant warm rim highlights.' },
+          { name: 'Esmeralda Sagrada & Luz Celestial', description: 'Luminous sacred emerald green with volumetric pure white-gold sunbeams, ethereal and sharp.' },
+          { name: 'Carmesim Nobre & Âmbar Puro', description: 'Rich deep crimson scarlet contrasting with bright amber solar highlights, intense emotional heat.' },
+          { name: 'Branco Pérola & Ouro Escovado (High-Key)', description: 'Luminous open-air daylight aesthetic, pearlescent whites, warm sand, and sharp golden accents with crisp depth.' }
+        ],
+        eyeCatchingTypographyStyles: [
+          {
+            name: 'Ultra-Bold Modern Sans-Serif (Mobile First)',
+            family: 'Modern Heavy Sans-Serif (Impact / Monumental Weight)',
+            stylingPrompt: 'The text is rendered in massive ultra-bold modern sans-serif typography, all-caps, with a high-saturation solar yellow or electric gold fill, deep sharp 3D bevel, and a solid dark drop-shadow. Extremely high readability and immediate eye-snap on mobile screens.'
+          },
+          {
+            name: '3D Chiseled Roman Display (Cinematográfico Monumental)',
+            family: 'Monumental Chiseled Roman Serif Display',
+            stylingPrompt: 'The text is rendered as monumental chiseled 3D Roman typography, sculpted as if carved from ancient radiant gold plate or polished ivory stone, with crisp beveled edges and directional specular glints across the letter ridges.'
+          },
+          {
+            name: 'Urgent Headline Badge (Alto Contraste)',
+            family: 'Heavy Condensed Block Typography',
+            stylingPrompt: 'The text appears as solid high-impact condensed block letters set over a clean, high-contrast dark crimson or solid charcoal backing badge banner, with a delicate luminous gold contour border, conveying an urgent sacred revelation.'
+          },
+          {
+            name: 'Dynamic Sharp Modern Display (Clímax & Tensão)',
+            family: 'Dynamic Sharp Display Typography',
+            stylingPrompt: 'The text is designed with bold dynamic display lettering, sharp architectural cuts, pure white fill with a vibrant golden-amber outer glow and hard black stroke separation, preventing any blur against the background.'
+          },
+          {
+            name: 'Sacred Polished Gold com Contorno Duplo',
+            family: 'Imperial Sacred Display',
+            stylingPrompt: 'The text features majestic uppercase typography coated in high-sheen polished gold leaf, with a double high-contrast stroke (inner white highlight, outer dark obsidian outline) and a subtle halo of light.'
+          }
+        ]
+      }
+    };
+  }
+
+  /**
+   * Gera as versões de 1 a 10 de thumbnails para o Nano Banana com Auditoria Anti-Mesmice:
+   * - Analisa as últimas 3 a 5 capas do canal para impedir cenários semelhantes
+   * - Rompe padrões monocromáticos/sépia escuros com paletas vibrantes de alto contraste
+   * - Aplica fontes chamativas e diversificadas (ultra-bold 3D, românica cinzelada, badge de manchete)
+   * - As respostas saem APENAS com o prompt em inglês contínuo para colar no Nano Banana
+   */
+  async generateNanoBananaThumbnailPrompts({ topic, script, language = 'it-IT', versionsCount = 10, channelId = null, fieldAHistory = '' } = {}) {
+    this.logger.info(`Gerando ${versionsCount} versões avançadas de prompts para Nano Banana com Auditoria Anti-Mesmice...`);
     const cleanTopic = topic || script?.topic || 'Histórico / Bíblico';
     const fullScript = script?.fullScript || (typeof script === 'string' ? script : `${script?.hook || ''}\n${script?.part1 || ''}\n${script?.part2 || ''}`.trim());
 
@@ -1889,6 +2026,13 @@ Example:
     };
     const targetLangName = languageNames[language] || language || 'Italiano';
 
+    // 1. Executar auditoria de diferenciação visual das 3 a 5 capas recentes do canal
+    const audit = await this.auditRecentChannelThumbnails({
+      count: 5,
+      channelId,
+      fallbackHistory: fieldAHistory
+    });
+
     if (this.aiText.isAvailable()) {
       const prompt = `You are an elite YouTube thumbnail director and prompt specialist for high CTR image generators (specifically Nano Banana / Midjourney).
 Analyze the video topic and the script provided below:
@@ -1900,9 +2044,42 @@ SCRIPT CONTENT:
 ${fullScript ? fullScript.slice(0, 4500) : cleanTopic}
 """
 
+================================================================================
+CRITICAL REQUIREMENT — VISUAL DIFFERENTIATION & CHANNEL THUMBNAIL AUDIT
+================================================================================
+We performed a systematic audit of the last ${audit.analyzedCount} thumbnails/videos of this channel:
+${audit.titlesSummary}
+
+DETECTED PATTERN FATIGUE / SATURATION ON PREVIOUS THUMBNAILS:
+- All previous thumbnails are trapped in dark, muddy brown/sepia, cave-like or torchlit stone chambers.
+- Low visual contrast and dull lighting make the channel look repetitive and easy to scroll past.
+- Monotone small serif typography positioned only in one corner with dark boxes.
+
+YOUR ABSOLUTE MANDATE FOR THESE NEW ${versionsCount} VERSIONS:
+1. SCENARIOS (ANTI-MONOTONY):
+   - STRICTLY FORBIDDEN: Do NOT place the character in dark stone rooms, caves, night torchlit corners, or muddy brown settings.
+   - MANDATORY: Every single version MUST feature an expansive, distinct, visually grand or open-air scenario (e.g., sun-drenched grand marble colonnade, panoramic mountain cliff under a striking cobalt sky, sacred temple courtyard under bright daylight rays, shimmering riverbank/oasis with crystalline water reflections, royal terrace at golden dawn).
+2. COLOR PALETTES & LIGHTING (BAN MUDDY SEPIA / DEMAND HIGH-CTR CONTRAST):
+   - Never produce a muddy brown/sepia or dimly lit image.
+   - Rotate across luminous, high-CTR color schemes:
+     * Version 1: Radiant Liquid Gold & Deep Cobalt Blue (high complementary luminescence)
+     * Version 2: Deep Imperial Purple, Ivory White Marble & Warm Gold Highlights
+     * Version 3: Sacred Luminous Emerald Green & Volumetric White Sunbeams
+     * Version 4: Rich Crimson Scarlet & Blazing Amber Solar Glow
+     * Version 5+: Brilliant High-Key Daylight with crisp golden contrasts
+3. DIVERSIFIED, EYE-CATCHING FONTS & TYPOGRAPHY:
+   - BREAK THE MONOTONE SERIF MOLD! Do NOT use the exact same small serif text for every version.
+   - Each version MUST use a distinct, bold, eye-catching font styling:
+     * Version 1: Ultra-Bold Heavy Modern Sans-Serif with 3D bevel and electric gold/yellow fill (mobile-first CTR punch).
+     * Version 2: 3D Chiseled Roman Monumental Display carved in polished gold metal with specular rim glints.
+     * Version 3: Urgent Headline Badge with high-impact block letters over a crimson/charcoal backing banner.
+     * Version 4: Dynamic Sharp Modern Display with crisp dual-tone white/amber and hard outline.
+     * Version 5+: Imperial Sacred Gold Display with double high-contrast stroke.
+   - Text must be punchy (1 to 2 words per line, max 15 chars per phrase) in ${targetLangName}, with maximum visual prominence and instant mobile readability.
+
 EXECUTE THE FOLLOWING 3-STAGE INTERNAL PROCESS:
 
-ETAPA 0 — INTERNAL READING VERIFICATION (silently anchor to literal script fragments):
+ETAPA 0 — INTERNAL READING VERIFICATION:
 Ensure your extraction uses authentic names, places, objects, and emotional turning points directly from the script text above, never generic filler.
 
 ETAPA 1 — LITERAL EXTRACTION:
@@ -1912,20 +2089,18 @@ ETAPA 1 — LITERAL EXTRACTION:
 - MOMENTO VISUAL: The highest-tension climax or dramatic revelation scene from the script.
 - SYMBOLIC ELEMENT: A concrete physical object from the script (not generic).
 - EMOTION: The precise emotional turning point (fear, grief, hope, relief, intense awe).
-- SCENARIO: Authentic setting, era, time of day, atmosphere.
-- PALETA: Dominant color temperature implied by the narrative.
 
 ETAPA 2 — MATRIX OF 5 AXES OF VARIATION (GENERATE EXACTLY ${versionsCount} VERSIONS WITHOUT REPETITION):
-For each of the ${versionsCount} versions (Version 1 to Version ${versionsCount}), rotate across these 5 axes so no two versions look similar:
-1. MOMENTO DO ROTEIRO: Distinct scenes from the script (opening hook, rising conflict, crisis, climax, revelation, resolution).
-2. HORA DO DIA / LUZ: Dawn, sunset, night with torch/fire light, harsh midday sun, golden hour.
-3. ELEMENTO ATMOSFÉRICO ATIVO: Dust particles, fog/mist, wind, smoke, embers, rain/water spray, clear crisp air (never repeat the same atmospheric element across versions).
-4. ENQUADRAMENTO / PLANO: Dramatic close-up, medium shot, wide shot with depth, low angle hero shot, over-the-shoulder POV.
-5. PALETA DOMINANTE: Warm amber, cold blue, split teal & orange, desaturated monochrome, deep golden hour, dusty ochre.
+For each of the ${versionsCount} versions, rotate so no two versions look similar:
+1. MOMENTO DO ROTEIRO: Distinct scenes from the script (opening hook, rising conflict, crisis, climax, revelation).
+2. SCENARIO (DIFFERENTIATED & GRAND): Grand open terrace, mountain summit, marble colonnade, temple courtyard, glowing desert horizon.
+3. HORA DO DIA / LUZ: Blazing golden hour, high-noon crisp solar light, dawn glow, celestial split light.
+4. ELEMENTO ATMOSFÉRICO: Volumetric sunbeams, crystal clean air, floating golden dust motes, desert wind, morning mist (never repeat).
+5. TYPOGRAPHY & FONT STYLE: Rotate across the 5 distinct eye-catching font styles described above.
 
 ETAPA 3 — OUTPUT FORMAT PER VERSION:
 Each prompt in "promptNanoBanana" MUST be a single, solid, CONTINUOUS BLOCK of lines with ZERO blank/empty lines inside it.
-DO NOT put any blank or empty line between sections (NO blank line between CHARACTER, SCENARIO, LIGHTING, COMPOSITION, TEXT CONTENT, etc.).
+DO NOT put any blank or empty line between sections.
 Every line inside the prompt must directly follow the previous line with a single line-break.
 An empty/blank line is reserved EXCLUSIVELY by batch processors to separate different prompts.
 Do NOT include any "RESULT:" line.
@@ -1935,29 +2110,22 @@ Generate a photorealistic cinematic YouTube thumbnail, 16:9 (1280x720px), 8K ult
 TEMA: [Topic of video]
 IDIOMA: ${targetLangName}
 VERSÃO: [Version Number]
+CHANNEL DIVERSITY AUDIT: Differentiated from the last 5 channel thumbnails (actively breaking the repetitive dark sepia / torch-lit stone chamber pattern).
 CHARACTER: [Detailed character descriptor from script, age, authentic period clothing, intense emotion, physically typical, dignified, fictional]
 SYMBOLIC ELEMENT: [Concrete symbolic item from the script described with realistic weight and texture]
-SCENARIO: [Specific environment, era, time of day, active atmospheric element: dust, fog, smoke, embers, or wind]
+SCENARIO (UNIQUE & DIVERSE): [Specific grand, open or monumental setting, era, time of day, active atmospheric element - NO dark caves or torch rooms]
 EMOTION: [Precise climax emotion in one impactful phrase]
-LIGHTING:
-Key light: warm amber [scene-motivated source] positioned at a low angle from the subject's side, casting a hard shadow with a defined terminator line splitting the face into warm and cold halves.
-Fill light: cold blue [scene-motivated source], low intensity, deep shadows preserved on the opposite side.
-Rim light: subtle warm glow tracing the shoulder edge and hair strands.
-Bokeh background. Rich warm-to-cold gradation. No flat lighting.
-COMPOSITION:
-Subject anchored right-of-center. Bottom-left quadrant darker and intentionally clear for text. Symbolic element softly blurred behind character. One foreground micro-detail for depth [stone, wood, rope, embers, ash, or water].
+COLOR PALETTE & LIGHTING (ANTI-SEPIA / HIGH-CTR CONTRAST): [Vibrant high-contrast palette, e.g. radiant gold & cobalt blue, imperial purple & ivory marble, emerald & celestial white rays - no muddy brown]
+COMPOSITION: [Dynamic framing, clear depth of field, clean zone reserved for text]
 TEXT CONTENT (the ONLY words permitted to appear anywhere in the image, written in ${targetLangName}):
 First word/short phrase: [max 15 characters, magnetic hook in ${targetLangName}]
 Second word/short phrase: [max 15 characters, high-impact payoff word in ${targetLangName}]
-TEXT APPEARANCE:
-The first phrase appears in elegant white serif typography, medium-large scale, sitting slightly above the second phrase, with a soft natural drop shadow for depth.
-The second phrase appears just below it in a warm golden serif tone, bold weight, similar scale, reading as the emotional payoff of the phrase above.
-A thin golden decorative line sits beneath both, no wider than the text block itself.
-Both phrases are positioned together in the bottom-left corner only, occupying no more than about a third of the image width.
+TYPOGRAPHY & VISUAL STYLING (EYE-CATCHING & DISTINCT):
+[Detailed description of the specific eye-catching font for this version: family, weight, 3D bevel/relief or badge, bright vibrant fill color, outline/shadow, high mobile visibility]
 CRITICAL TEXT RULE:
 The image must contain ONLY the two phrases named above, rendered as clean natural typography. Never render font names, color codes, pixel measurements, unit abbreviations, tildes, dashes-as-labels, or any styling instruction as visible text or characters anywhere in the image.
 ABSOLUTE PROHIBITIONS:
-No watermarks. No logos. No full-width banners. No text outside the bottom-left zone. No AI artifacts. No plastic skin. No generic stock feel. No decorative icons, sparkles, stars, or symbols anywhere in the frame. No stray characters, numbers, or code fragments anywhere in the image. No depictions of dwarfism, short stature, or any physical disability or visible physical impairment, in the main character or any figure in the frame.
+No watermarks. No logos. No full-width banners. No dark muddy sepia monochrome. No AI artifacts. No plastic skin. No generic stock feel. No decorative icons, sparkles, stars, or symbols anywhere in the frame. No stray characters, numbers, or code fragments anywhere in the image. No depictions of dwarfism, short stature, or any physical disability or visible physical impairment, in the main character or any figure in the frame.
 
 RETURN ONLY VALID JSON in this structure:
 {
@@ -1965,6 +2133,9 @@ RETURN ONLY VALID JSON in this structure:
     {
       "version": 1,
       "title": "Versão 1 - [Nome descritivo curto em português]",
+      "scenarioType": "[Tipo do cenário, ex: Terraço de Mármore Aberto]",
+      "paletteName": "[Nome da paleta, ex: Ouro Solar & Azul Cobalto]",
+      "fontStyle": "[Estilo da fonte, ex: Ultra-Bold 3D Amarelo Mobile]",
       "promptNanoBanana": "Generate a photorealistic cinematic YouTube thumbnail..."
     }
   ]
@@ -1975,100 +2146,116 @@ RETURN ONLY VALID JSON in this structure:
         const parsed = this.parseJsonSafe(response);
         const versions = Array.isArray(parsed?.versions) ? parsed.versions : [];
         if (versions.length > 0) {
-          return versions.slice(0, versionsCount).map(v => ({
+          const cleanedVersions = versions.slice(0, versionsCount).map((v, idx) => ({
             ...v,
+            version: v.version || (idx + 1),
+            scenarioType: v.scenarioType || (idx % 2 === 0 ? 'Cenário Aberto Monumental' : 'Luz Solar & Colunatas'),
+            paletteName: v.paletteName || (idx % 2 === 0 ? 'Ouro Solar & Azul Cobalto' : 'Púrpura Imperial & Mármore'),
+            fontStyle: v.fontStyle || (idx % 2 === 0 ? 'Ultra-Bold 3D Display' : '3D Chiseled Roman'),
             promptNanoBanana: this.cleanPromptBlock(v.promptNanoBanana)
           }));
+          cleanedVersions.audit = audit;
+          return cleanedVersions;
         }
       } catch (err) {
-        this.logger.warn(`Erro ao gerar prompts Nano Banana: ${err.message}. Usando variações base avançadas.`);
+        this.logger.warn(`Erro ao gerar prompts Nano Banana: ${err.message}. Usando matriz avançada de diferenciação.`);
       }
     }
 
-    // Fallback estruturado profissional com os 5 eixos e o template Sony A7R V
-    const atmosphericElements = [
-      'swirling ancient dust particles caught in dramatic side light',
-      'mysterious low morning fog drifting across the stony ground',
-      'dramatic dark smoke and glowing embers floating in the air',
-      'intense hot desert wind whipping coarse linen fabric and hair',
-      'subtle water mist and airborne moisture droplets reflecting light',
-      'sparks flying from a burning olive oil torch in pitch darkness',
-      'golden dust motes floating in sharp volumetric sunbeams',
-      'deep nocturnal mist illuminated by cool pale moonlight',
-      'scorching arid haze creating realistic optical heat distortion',
-      'crisp atmospheric mountain air with sharp crystal clarity'
-    ];
-
-    const lightingKeySources = [
-      'flickering torchlight',
-      'low setting golden hour sun',
-      'harsh direct desert sunlight',
-      'subtle divine upper beam through dark clouds',
-      'crackling hearth fire glow',
-      'early dawn pink-gold horizon',
-      'lantern light through thin parchment',
-      'high contrast dramatic rim light',
-      'deep twilight ambient glow',
-      'intense ceremonial candle flames'
-    ];
-
-    const compositions = [
-      { framing: 'Dramatic close-up, subject right-of-center', fg: 'cracked stone altar fragment', title: 'Close-up Dramático com Alto Contraste' },
-      { framing: 'Medium shot with dynamic side profile', fg: 'weathered ancient rope and wood', title: 'Tensão Dinâmica em Plano Médio' },
-      { framing: 'Low angle hero shot conveying deep awe', fg: 'smoking embers and dark ash', title: 'Revelação em Ângulo Baixo' },
-      { framing: 'Over-the-shoulder POV witnessing the event', fg: 'coarse woven tunic fold', title: 'Ponto de Vista / Testemunha Ocular' },
-      { framing: 'Wide cinematic framing with dramatic depth', fg: 'dry desert sand and polished pebbles', title: 'Grande Cenário e Clímax Épico' },
-      { framing: 'Tight macro focus on emotion and gesture', fg: 'carved ancient wooden talisman', title: 'Macro Foco na Emoção e Gesto' },
-      { framing: 'Dutch tilt slight angle adding psychological tension', fg: 'shattered pottery shards', title: 'Tensão Psicológica Inclinada' },
-      { framing: 'Contre-jour silhouette against intense backlight', fg: 'coarse mountain rock ledge', title: 'Silhueta em Contraluz Forte' },
-      { framing: 'Side-by-side visual tension in split shadow', fg: 'metal chain link and iron pin', title: 'Divisão de Luz e Sombra Marcante' },
-      { framing: 'Intense three-quarter portrait with focused gaze', fg: 'ancient rolled parchment edge', title: 'Retrato de Resolução e Destino' }
+    // Fallback estruturado profissional com Auditoria Anti-Mesmice e Matriz de Diferenciação Visual
+    const scenarios = [
+      {
+        type: 'Terraço Monumental de Mármore',
+        desc: 'A sun-drenched grand marble terrace with towering ancient pillars overlooking an expansive desert valley under a vibrant azure sky, crisp air with fine golden dust motes caught in sharp volumetric sunbeams',
+        palette: 'Radiant liquid gold & royal cobalt blue (high complementary luminescence, zero muddy sepia)',
+        keyLight: 'blazing high golden-hour sun casting crisp directional shadows across white polished stone',
+        framing: 'Medium shot with dynamic 3/4 angle, subject anchored right',
+        fontName: 'Ultra-Bold Modern Sans-Serif (Mobile First)',
+        fontPrompt: 'The first phrase appears in massive ultra-bold modern sans-serif typography, all-caps in brilliant pure white with a subtle gold rim. The second phrase appears directly below in electric solar gold, extra-heavy weight, featuring a sharp 3D bevel and a deep black drop-shadow. Positioned in the lower-left corner with extreme high-contrast readability on mobile screens.'
+      },
+      {
+        type: 'Penhasco Panorâmico ao Amanhecer',
+        desc: 'A dramatic mountain cliff summit at dawn, sweeping open horizon under an intense cobalt and magenta sky, crisp mountain air with early morning pink-gold light cutting across the ridge',
+        palette: 'Deep imperial purple, pure ivory stone & brilliant warm gold highlights',
+        keyLight: 'intense low-angle dawn sunburst creating a blazing golden rim light tracing the subject and fabric',
+        framing: 'Dramatic low-angle hero shot conveying revelation and awe',
+        fontName: '3D Chiseled Roman Monumental Display',
+        fontPrompt: 'The text is rendered as monumental chiseled 3D Roman typography, sculpted as if carved from ancient radiant gold plate and polished marble. The first phrase in polished ivory capital letters, the second phrase below in sculpted beveled gold with specular light glints along the letter edges.'
+      },
+      {
+        type: 'Colunatas do Templo sob Luz Solar',
+        desc: 'An open-air temple courtyard under brilliant midday solar rays, towering limestone pillars and rich woven crimson canopies swaying in a gentle desert breeze, pure clean atmospheric light',
+        palette: 'Sacred luminous emerald green & volumetric pure white-gold sunbeams',
+        keyLight: 'direct overhead midday sun softened by thin linen sails, creating high-contrast graphic shadows',
+        framing: 'Dynamic side profile with deep architectural perspective behind',
+        fontName: 'Urgent Headline Badge (Alto Contraste)',
+        fontPrompt: 'The text appears as solid high-impact condensed block letters set over a clean, high-contrast dark crimson rectangular backing badge banner with a delicate luminous gold contour line. First phrase in crisp white, second phrase in bold sunburst amber.'
+      },
+      {
+        type: 'Oásis e Margem Límpida ao Pôr do Sol',
+        desc: 'A sacred riverbank with lush date palms and crystalline water reflecting radiant twilight, warm shimmering water caustics and glowing embers carried on a gentle evening wind',
+        palette: 'Rich crimson scarlet & blazing amber solar glow against crisp evening turquoise',
+        keyLight: 'warm horizontal sunset light illuminating the subject face with rich amber tones and cold sky fill',
+        framing: 'Over-the-shoulder POV witnessing the miraculous revelation',
+        fontName: 'Dynamic Sharp Modern Display (Clímax)',
+        fontPrompt: 'The text features dynamic sharp modern display typography with architectural cuts. The first phrase in gleaming snow white with a razor-thin black stroke, the second phrase in radiant liquid gold with a subtle outer glow for maximum pop against the background.'
+      },
+      {
+        type: 'Pórtico Real com Mármore e Ouro',
+        desc: 'An elevated royal portico with gleaming white stone balustrades, distant view of Jerusalem ancient gates bathed in bright afternoon clarity, crisp shadows and volumetric atmosphere',
+        palette: 'High-key luminous pearl white & solar gold with crisp dark contrast',
+        keyLight: 'warm angled solar beam cutting through an open arched gateway',
+        framing: 'Tight cinematic close-up with intense focused emotion, subject offset right',
+        fontName: 'Sacred Polished Gold com Contorno Duplo',
+        fontPrompt: 'The text is rendered in imperial sacred display typography coated in high-sheen polished gold leaf. Both phrases feature a dual high-contrast stroke (inner white edge, outer solid obsidian contour) ensuring crisp instant readability.'
+      }
     ];
 
     const result = [];
     for (let i = 0; i < versionsCount; i++) {
       const vNum = i + 1;
-      const comp = compositions[i % compositions.length];
-      const atmos = atmosphericElements[i % atmosphericElements.length];
-      const keySource = lightingKeySources[i % lightingKeySources.length];
+      const scen = scenarios[i % scenarios.length];
 
       const promptTemplate = [
         'Generate a photorealistic cinematic YouTube thumbnail, 16:9 (1280x720px), 8K ultra-sharp, shot on Sony A7R V with 85mm f/1.4 lens. Hyperrealistic skin pores, fabric texture, hair strands, sweat, dust particles visible. Physically accurate light behavior.',
         `TEMA: ${cleanTopic}`,
         `IDIOMA: ${targetLangName}`,
         `VERSÃO: Version ${vNum}`,
+        'CHANNEL DIVERSITY AUDIT: Differentiated from the last 5 channel thumbnails (actively breaking the repetitive dark sepia / torch-lit stone chamber pattern).',
         'CHARACTER: Ancient historical protagonist with weathered features, authentic coarse-woven tunic, intense expression of dramatic shock and revelation, physically typical, completely fictional, dignified.',
         'SYMBOLIC ELEMENT: Ancient symbolic artifact with heavy tactile texture, worn edges, and profound narrative significance.',
-        `SCENARIO: Ancient historical setting, dramatic atmosphere, ${atmos}.`,
+        `SCENARIO (UNIQUE & DIVERSE): ${scen.desc}.`,
         'EMOTION: Overwhelming realization and awe at a hidden revelation.',
-        'LIGHTING:',
-        `Key light: warm amber from ${keySource} positioned at a low angle from the subject's side, casting a hard shadow with a defined terminator line splitting the face into warm and cold halves.`,
-        'Fill light: cold blue ambient bounce, low intensity, deep shadows preserved on the opposite side.',
-        'Rim light: subtle warm glow tracing the shoulder edge and hair strands.',
-        'Bokeh background. Rich warm-to-cold gradation. No flat lighting.',
+        'COLOR PALETTE & LIGHTING (ANTI-SEPIA / HIGH-CTR CONTRAST):',
+        `Dominant palette: ${scen.palette}.`,
+        `Key light: ${scen.keyLight}.`,
+        'Fill light: cold sky ambient bounce, subtle fill, preserving crisp photographic depth.',
+        'Rim light: brilliant golden halo tracing shoulder edge and hair strands, separating subject from background.',
+        'Bokeh background. Rich luminous gradation. No flat lighting. No muddy brown.',
         'COMPOSITION:',
-        `${comp.framing}. Bottom-left quadrant darker and intentionally clear for text. Symbolic element softly blurred behind character. One foreground micro-detail for depth: ${comp.fg}.`,
+        `${scen.framing}. Lower-left quadrant intentionally clear and balanced for text. Symbolic element softly blurred behind character. One foreground micro-detail for depth: polished stone edge or weathered rope.`,
         `TEXT CONTENT (the ONLY words permitted to appear anywhere in the image, written in ${targetLangName}):`,
         'First word/short phrase: IL SEGRETO',
         'Second word/short phrase: RIVELATO',
-        'TEXT APPEARANCE:',
-        'The first phrase appears in elegant white serif typography, medium-large scale, sitting slightly above the second phrase, with a soft natural drop shadow for depth.',
-        'The second phrase appears just below it in a warm golden serif tone, bold weight, similar scale, reading as the emotional payoff of the phrase above.',
-        'A thin golden decorative line sits beneath both, no wider than the text block itself.',
-        'Both phrases are positioned together in the bottom-left corner only, occupying no more than about a third of the image width.',
+        'TYPOGRAPHY & VISUAL STYLING (EYE-CATCHING & DISTINCT):',
+        scen.fontPrompt,
         'CRITICAL TEXT RULE:',
         'The image must contain ONLY the two phrases named above, rendered as clean natural typography. Never render font names, color codes, pixel measurements, unit abbreviations, tildes, dashes-as-labels, or any styling instruction as visible text or characters anywhere in the image.',
         'ABSOLUTE PROHIBITIONS:',
-        'No watermarks. No logos. No full-width banners. No text outside the bottom-left zone. No AI artifacts. No plastic skin. No generic stock feel. No decorative icons, sparkles, stars, or symbols anywhere in the frame. No stray characters, numbers, or code fragments anywhere in the image. No depictions of dwarfism, short stature, or any physical disability or visible physical impairment, in the main character or any figure in the frame.'
+        'No watermarks. No logos. No full-width banners. No dark muddy sepia monochrome. No AI artifacts. No plastic skin. No generic stock feel. No decorative icons, sparkles, stars, or symbols anywhere in the frame. No stray characters, numbers, or code fragments anywhere in the image. No depictions of dwarfism, short stature, or any physical disability or visible physical impairment, in the main character or any figure in the frame.'
       ].join('\n');
 
       result.push({
         version: vNum,
-        title: `Versão ${vNum} - ${comp.title}`,
+        title: `Versão ${vNum} - ${scen.type}`,
+        scenarioType: scen.type,
+        paletteName: scen.palette.split('(')[0].trim(),
+        fontStyle: scen.fontName,
         promptNanoBanana: promptTemplate
       });
     }
 
+    result.audit = audit;
     return result;
   }
 

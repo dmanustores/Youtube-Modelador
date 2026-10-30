@@ -1980,6 +1980,7 @@ function renderYouTubeAccount(account, accountsList = []) {
 
 
 function switchView(view) {
+  if (!view) return;
   ui.currentView = view;
   $$('.nav-item').forEach(item => item.classList.toggle('active', item.dataset.view === view));
   $$('.view').forEach(item => item.classList.toggle('active', item.id === `${view}-view`));
@@ -1998,7 +1999,10 @@ function switchView(view) {
     $('#view-eyebrow').textContent = titles[view][0];
     $('#view-title').textContent = titles[view][1];
   }
-  location.hash = view;
+  if (location.hash.replace(/^#/, '') !== view) {
+    location.hash = view;
+  }
+  window.scrollTo({ top: 0, behavior: 'smooth' });
   if (view === 'workflow') {
     if (typeof loadWorkflowPlannedThemes === 'function') {
       loadWorkflowPlannedThemes();
@@ -2008,6 +2012,9 @@ function switchView(view) {
     }
   }
   if (view === 'calendar') {
+    if (typeof loadWorkflowPlannedThemes === 'function') {
+      loadWorkflowPlannedThemes().catch(() => {});
+    }
     renderCalendar(ui.state?.schedule || []);
     if (!calendarHasSyncedYT) {
       syncCalendarFromYouTube().catch(() => {});
@@ -2836,10 +2843,24 @@ async function mutate(url, method, body, successMessage) {
 }
 
 document.addEventListener('click', async event => {
+  if (event.target.closest('#wf-paste-from-clipboard-btn')) {
+    event.preventDefault();
+    if (typeof handlePasteFromClipboard === 'function') {
+      return handlePasteFromClipboard();
+    }
+  }
   const nav = event.target.closest('[data-view]');
   if (nav) return switchView(nav.dataset.view);
   const go = event.target.closest('[data-go]');
   if (go) return switchView(go.dataset.go);
+  const hashLink = event.target.closest('a[href^="#"]');
+  if (hashLink) {
+    const targetView = hashLink.getAttribute('href').replace(/^#/, '');
+    if (['overview', 'workflow', 'operator', 'pipeline', 'calendar', 'analytics', 'engagement', 'settings'].includes(targetView)) {
+      event.preventDefault();
+      return switchView(targetView);
+    }
+  }
   if (event.target.closest('[data-close]')) return event.target.closest('dialog').close();
 
   const open = event.target.closest('[data-open-content]');
@@ -3940,7 +3961,8 @@ function gatherCurrentDraft() {
   return {
     savedAt: new Date().toISOString(),
     mode: typeof wfStudioMode !== 'undefined' ? wfStudioMode : 'full',
-    activeThemeId: typeof activeThemeId !== 'undefined' ? activeThemeId : null,
+    activeThemeId: wfState.currentThemeId || null,
+    currentThemeId: wfState.currentThemeId || null,
     // Etapa 2
     topic: $('#wf-script-topic')?.value || '',
     angle: $('#wf-script-angle')?.value || '',
@@ -3997,15 +4019,26 @@ function scheduleAutoSaveDraft(delayMs = 1200) {
 
 async function saveWorkflowDraft(showToastNotice = false) {
   try {
+    // BLINDAGEM TOTAL: Se o usuário estiver no modo Envio de Cortes, o auto-save NÃO DEVE alterar o rascunho do vídeo longo
+    if (typeof wfStudioMode !== 'undefined' && wfStudioMode === 'cortes') {
+      return;
+    }
+
     const draft = gatherCurrentDraft();
     if (!hasDraftContent(draft)) {
       updateDraftStatusIndicator('saved');
       return;
     }
 
-    // 1. Persistência Imediata Offline-First no localStorage
+    const themeId = wfState.currentThemeId || draft.activeThemeId;
+
+    // 1. Persistência Imediata Offline-First no localStorage (global e por tema)
     try {
       localStorage.setItem(WF_DRAFT_STORAGE_KEY, JSON.stringify(draft));
+      if (themeId) {
+        localStorage.setItem(`wf_draft_theme_${themeId}`, JSON.stringify(draft));
+        localStorage.setItem('wf_last_active_theme_id', themeId);
+      }
     } catch (_lsErr) {
       console.warn('Erro ao salvar rascunho no localStorage:', _lsErr);
     }
@@ -4013,7 +4046,7 @@ async function saveWorkflowDraft(showToastNotice = false) {
     wfLastSavedDraftTimestamp = Date.now();
     const timeStr = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 
-    // 2. Persistência no SQLite (se servidor estiver acessível)
+    // 2. Persistência no SQLite global (se servidor estiver acessível)
     let serverOk = true;
     try {
       await api('/api/workflow/draft', {
@@ -4025,16 +4058,62 @@ async function saveWorkflowDraft(showToastNotice = false) {
       console.info('Auto-save no servidor indisponível no momento, salvo no navegador:', _netErr?.message);
     }
 
+    // 3. PERSISTÊNCIA DIRETA NA TABELA DO TEMA (workflow_planned_themes)
+    if (themeId) {
+      try {
+        const themePayload = {
+          fullScript: draft.script?.fullScript || draft.directScript || null,
+          narrationBlocks: Array.isArray(draft.narrationBlocks) && draft.narrationBlocks.length > 0 ? draft.narrationBlocks : (draft.script?.narrationBlocks || null),
+          googleFlowPrompts: Array.isArray(draft.googleFlowPrompts) && draft.googleFlowPrompts.length > 0 ? draft.googleFlowPrompts : null,
+          nanoBananaPrompts: Array.isArray(draft.nanoBananaPrompts) && draft.nanoBananaPrompts.length > 0 ? draft.nanoBananaPrompts : null,
+          seoData: draft.seo || (draft.uploadTitle || draft.uploadDescription ? { title: draft.uploadTitle, description: draft.uploadDescription, tags: draft.uploadTags } : null),
+          videoPath: draft.uploadPath || null,
+          thumbnailPath: draft.uploadThumbnailPath || null,
+          productionData: draft,
+          status: 'in_production'
+        };
+        if (draft.uploadTime && draft.uploadTime.includes('T')) {
+          themePayload.scheduledTime = draft.uploadTime.split('T')[1]?.slice(0, 5);
+        }
+        await api(`/api/workflow/planned-themes/${encodeURIComponent(themeId)}`, {
+          method: 'PATCH',
+          body: JSON.stringify(themePayload)
+        });
+
+        // Atualiza objeto em memória se existir
+        if (Array.isArray(wfPlannedThemes)) {
+          const inMem = wfPlannedThemes.find(t => t.id === themeId);
+          if (inMem) {
+            inMem.full_script = themePayload.fullScript;
+            inMem.narration_blocks = themePayload.narrationBlocks;
+            inMem.google_flow_prompts = themePayload.googleFlowPrompts;
+            inMem.nano_banana_prompts = themePayload.nanoBananaPrompts;
+            inMem.seo_data = themePayload.seoData;
+            inMem.video_path = themePayload.videoPath;
+            inMem.thumbnail_path = themePayload.thumbnailPath;
+            inMem.production_data = themePayload.productionData;
+            inMem.status = 'in_production';
+          }
+        }
+      } catch (_tErr) {
+        console.warn('Erro ao atualizar tema planejado no SQLite:', _tErr);
+      }
+    }
+
     if (serverOk) {
       updateDraftStatusIndicator('saved', timeStr);
       if (showToastNotice) {
-        showToast('💾 Rascunho salvo com sucesso no navegador e no banco de dados!', 'success');
+        showToast('💾 Produção salva com sucesso no banco de dados e navegador!', 'success');
       }
     } else {
       updateDraftStatusIndicator('offline', timeStr, true);
       if (showToastNotice) {
-        showToast('💾 Rascunho salvo com sucesso no navegador (offline)!', 'info');
+        showToast('💾 Produção salva localmente no navegador (offline)!', 'info');
       }
+    }
+
+    if (typeof renderActiveProductionsBar === 'function') {
+      renderActiveProductionsBar();
     }
   } catch (err) {
     console.error('Falha ao salvar rascunho do workflow:', err);
@@ -4249,9 +4328,29 @@ async function restoreWorkflowDraft(force = false) {
       setWorkflowStudioMode('cortes');
     }
 
+    // Vincular e restaurar tema ativo se houver
+    const restoredThemeId = draft.currentThemeId || draft.activeThemeId || localStorage.getItem('wf_last_active_theme_id');
+    if (restoredThemeId) {
+      wfState.currentThemeId = restoredThemeId;
+      if (Array.isArray(wfPlannedThemes)) {
+        const found = wfPlannedThemes.find(t => t.id === restoredThemeId);
+        if (found) {
+          wfState.currentTheme = found;
+          wfState.scheduledDate = found.scheduled_date || null;
+          wfState.scheduledTime = found.scheduled_time || null;
+        }
+      }
+    }
+
     // Exibir banner de notificação de restauração e atualizar indicador
     showDraftRecoveryBanner(draft);
     updateDraftStatusIndicator('restored');
+    if (typeof renderWorkflowActiveThemeCard === 'function') {
+      renderWorkflowActiveThemeCard();
+    }
+    if (typeof renderActiveProductionsBar === 'function') {
+      renderActiveProductionsBar();
+    }
     return true;
   } catch (err) {
     console.error('Erro ao restaurar rascunho de produção:', err);
@@ -4324,8 +4423,22 @@ function attachWorkflowAutoSaveListeners() {
       const draft = gatherCurrentDraft();
       if (hasDraftContent(draft)) {
         localStorage.setItem(WF_DRAFT_STORAGE_KEY, JSON.stringify(draft));
+        const themeId = wfState.currentThemeId || draft.activeThemeId;
+        if (themeId) {
+          localStorage.setItem(`wf_draft_theme_${themeId}`, JSON.stringify(draft));
+          localStorage.setItem('wf_last_active_theme_id', themeId);
+        }
       }
     } catch (_e) {}
+  });
+
+  // Salva automaticamente ao mudar de aba ou minimizar a janela
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      try {
+        saveWorkflowDraft(false);
+      } catch (_e) {}
+    }
   });
 
   // Eventos de rede online/offline
@@ -4392,7 +4505,7 @@ function resetPasteModal() {
  * Limpa saídas intermediárias de produção (prompts, thumbnail, SEO e formulário de upload)
  * mantendo o roteiro ativo na tela quando um novo roteiro for gerado ou aplicado.
  */
-function clearDownstreamProductionData() {
+function clearDownstreamProductionData({ preserveLog = false } = {}) {
   wfState.narrationBlocks = [];
   wfState.googleFlowPrompts = [];
   wfState.nanoBananaPrompts = [];
@@ -4466,7 +4579,9 @@ function clearDownstreamProductionData() {
   // Ocultar card de progresso de upload
   $('#wf-schedule-progress-card')?.classList.add('hidden');
   resetPasteModal();
-  hideScheduleStatusBanner();
+  if (!preserveLog) {
+    hideScheduleStatusBanner();
+  }
   if (typeof collapseMetadataFields === 'function') {
     collapseMetadataFields();
   }
@@ -4480,6 +4595,7 @@ function clearDownstreamProductionData() {
 function resetWorkflowStudio({ keepFieldA = true, preserveTopic = '', preserveLog = false, notify = true } = {}) {
   // 1. Resetar Estado Interno
   wfState.currentThemeId = null;
+  wfState.currentTheme = null;
   wfState.scheduledDate = null;
   wfState.scheduledTime = null;
   wfState.script = null;
@@ -4487,6 +4603,9 @@ function resetWorkflowStudio({ keepFieldA = true, preserveTopic = '', preserveLo
   wfState.googleFlowPrompts = [];
   wfState.nanoBananaPrompts = [];
   wfState.seo = null;
+  try {
+    localStorage.removeItem('wf_last_active_theme_id');
+  } catch (_) {}
   if (!preserveLog) {
     lastProductionLog = null;
     hideScheduleStatusBanner();
@@ -4536,7 +4655,7 @@ function resetWorkflowStudio({ keepFieldA = true, preserveTopic = '', preserveLo
   if (directLabel) directLabel.textContent = 'Já possui o roteiro total pronto gerado por fora? Colar aqui';
 
   // 3. Limpar saídas intermediárias e de upload (Etapas 3, 4, 5, 6 e 8)
-  clearDownstreamProductionData();
+  clearDownstreamProductionData({ preserveLog });
 
   // 4. Etapa 7 (Resumo para o próximo roteiro / Campo A)
   if (!keepFieldA) {
@@ -4664,6 +4783,9 @@ document.addEventListener('click', (e) => {
 let wfPlannedThemes = [];
 let wfThemesCurrentFilter = 'all';
 let wfThemesCurrentFormatFilter = 'all';
+let wfThemesViewMode = localStorage.getItem('wf_themes_view_mode') || 'by_day';
+let wfThemesSortDirection = localStorage.getItem('wf_themes_sort_direction') || 'asc';
+let wfThemesScope = localStorage.getItem('wf_themes_scope') || 'upcoming';
 let wfStudioMode = 'full';
 let wfCurrentUploadFormat = 'explainer';
 let wfQueueSortOrder = 'asc';
@@ -4724,6 +4846,36 @@ async function loadWorkflowPlannedThemes() {
       updateWorkflowThemesCounts(data.counts || {});
       renderWorkflowPlannedThemes(wfPlannedThemes, wfThemesCurrentFilter);
       renderCalendarPlannedThemes();
+      renderWorkflowActiveThemeCard();
+      if (typeof renderActiveProductionsBar === 'function') {
+        renderActiveProductionsBar();
+      }
+
+      // Conecta o tema ativo aos dados oficiais do cronograma
+      if (wfState.currentThemeId) {
+        const found = wfPlannedThemes.find(t => t.id === wfState.currentThemeId);
+        if (found) {
+          wfState.currentTheme = found;
+          wfState.scheduledDate = found.scheduled_date || null;
+          wfState.scheduledTime = found.scheduled_time || null;
+          renderWorkflowActiveThemeCard();
+        }
+      } else {
+        // Se o estúdio ainda não tem tema carregado, restaura automaticamente o tema ativo EM PRODUÇÃO
+        const lastActiveId = localStorage.getItem('wf_last_active_theme_id');
+        let found = lastActiveId ? wfPlannedThemes.find(t => t.id === lastActiveId) : null;
+        if (!found || found.status !== 'in_production') {
+          found = wfPlannedThemes.find(t => t.status === 'in_production');
+        }
+        if (found && found.status === 'in_production') {
+          wfState.currentThemeId = found.id;
+          wfState.currentTheme = found;
+          wfState.scheduledDate = found.scheduled_date || null;
+          wfState.scheduledTime = found.scheduled_time || null;
+          localStorage.setItem('wf_last_active_theme_id', found.id);
+          renderWorkflowActiveThemeCard();
+        }
+      }
     }
   } catch (err) {
     console.error('Erro ao carregar temas planejados:', err);
@@ -4753,6 +4905,199 @@ function updateWorkflowThemesCounts(counts = {}) {
   if ($('#wf-count-longs')) $('#wf-count-longs').innerHTML = `🎬 <strong>${longs}</strong> longos (${postedLongs} postados)`;
 }
 
+function getDayDiffFromToday(dateStr) {
+  if (!dateStr || dateStr === 'sem-data') return 999;
+  try {
+    const parts = dateStr.split('-');
+    if (parts.length === 3) {
+      const year = Number(parts[0]);
+      const month = Number(parts[1]);
+      const day = Number(parts[2]);
+      const d = new Date(year, month - 1, day);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const target = new Date(d);
+      target.setHours(0, 0, 0, 0);
+      return Math.round((target - today) / (1000 * 60 * 60 * 24));
+    }
+  } catch (_e) {}
+  return 0;
+}
+
+function formatDayGroupHeader(dateStr) {
+  if (!dateStr || dateStr === 'sem-data') {
+    return {
+      title: 'Sem Data Definida',
+      badgeClass: 'past',
+      badgeText: 'Planejamento Livre',
+      isToday: false,
+      isPast: false,
+      diffDays: 999
+    };
+  }
+  try {
+    const parts = dateStr.split('-');
+    if (parts.length === 3) {
+      const year = Number(parts[0]);
+      const month = Number(parts[1]);
+      const day = Number(parts[2]);
+      const d = new Date(year, month - 1, day);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const target = new Date(d);
+      target.setHours(0, 0, 0, 0);
+      const diffDays = Math.round((target - today) / (1000 * 60 * 60 * 24));
+
+      const weekday = new Intl.DateTimeFormat('pt-BR', { weekday: 'long' }).format(d);
+      const formattedWeekday = weekday.charAt(0).toUpperCase() + weekday.slice(1);
+      const dayFormatted = String(day).padStart(2, '0');
+      const monthName = new Intl.DateTimeFormat('pt-BR', { month: 'long' }).format(d);
+      const title = `${formattedWeekday}, ${dayFormatted} de ${monthName}`;
+
+      let badgeClass = 'past';
+      let badgeText = '';
+      let isToday = false;
+      let isPast = false;
+
+      if (diffDays === 0) {
+        badgeClass = 'today';
+        badgeText = 'Hoje';
+        isToday = true;
+      } else if (diffDays === 1) {
+        badgeClass = 'tomorrow';
+        badgeText = 'Amanhã';
+      } else if (diffDays === -1) {
+        badgeClass = 'past';
+        badgeText = 'Ontem';
+        isPast = true;
+      } else if (diffDays > 1) {
+        badgeClass = 'tomorrow';
+        badgeText = `em ${diffDays} dias`;
+      } else {
+        badgeClass = 'past';
+        badgeText = `${Math.abs(diffDays)} dias atrás`;
+        isPast = true;
+      }
+
+      return { title, badgeClass, badgeText, isToday, isPast, diffDays };
+    }
+  } catch (_e) {}
+  return { title: dateStr, badgeClass: 'past', badgeText: '', isToday: false, isPast: false, diffDays: 0 };
+}
+
+function renderThemeCardItemHTML(t, isGroupedByDay = false) {
+  const isPosted = t.status === 'posted';
+  const dateFormatted = formatScheduleDate(t.scheduled_date);
+  const hasFullScript = Boolean(t.full_script && String(t.full_script).trim());
+  const charCount = t.script_char_count || (hasFullScript ? t.full_script.length : 0);
+  const isShort = isShortTheme(t);
+  const isAvulso = isAvulsoTheme(t);
+  const formatClass = isShort ? 'format-short' : 'format-long';
+  const formatBadge = isShort
+    ? '<span class="theme-card-format" style="background: rgba(244, 63, 94, 0.16); color: #fda4af; border: 1px solid rgba(244, 63, 94, 0.35); font-weight: 700;">⚡ Short</span>'
+    : `<span class="theme-card-format" style="background: rgba(59, 130, 246, 0.15); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.3); font-weight: 600;">🎬 ${escapeHTML(t.format || 'Vídeo Longo')}</span>`;
+
+  const originBadge = isAvulso
+    ? (isShort
+        ? '<span class="theme-origin-badge origin-avulso" title="Short / Corte enviado de forma avulsa">⚡ Corte Avulso</span>'
+        : '<span class="theme-origin-badge origin-avulso" title="Vídeo enviado de forma avulsa">📤 Envio Avulso</span>')
+    : '<span class="theme-origin-badge origin-planejado" title="Tema criado pelo planejamento editorial do canal">📋 Planejado</span>';
+
+  let benchmarkRef = t.benchmark_ref || t.benchmarkRef || '';
+  if (!benchmarkRef && t.notes) {
+    try {
+      const parsedNotes = JSON.parse(t.notes);
+      benchmarkRef = parsedNotes.benchmarkRef || '';
+    } catch (_e) {}
+  }
+  const recoveryBadge = benchmarkRef
+    ? `<span class="theme-origin-badge" style="background: rgba(244, 63, 94, 0.15); color: #f43f5e; border: 1px solid rgba(244, 63, 94, 0.35); font-weight: 600;" title="Fórmula campeã: ${escapeHTML(benchmarkRef)}">🎯 Recuperação</span>`
+    : '';
+
+  const timeDisplay = t.scheduled_time ? `⏰ ${escapeHTML(t.scheduled_time)}` : '';
+  const dateBadgeContent = isGroupedByDay && t.scheduled_time
+    ? `${timeDisplay}`
+    : `📅 ${escapeHTML(dateFormatted)}${timeDisplay ? ` · ${timeDisplay}` : ''}`;
+
+  return `
+    <div class="theme-card status-${escapeHTML(t.status || 'pending')} ${formatClass}" data-theme-card-id="${escapeHTML(t.id)}">
+      <div>
+        <!-- Linha superior de Data e Status -->
+        <div class="theme-card-date-row">
+          <span class="theme-date-badge" title="${isPosted ? 'Data de postagem no YouTube' : 'Data e horário previstos de postagem'}" ${isPosted ? 'style="background: rgba(16, 185, 129, 0.12); color: #34d399; border-color: rgba(16, 185, 129, 0.3);"' : ''}>
+            ${dateBadgeContent}
+            ${!isPosted ? `<button type="button" data-edit-theme-date="${escapeHTML(t.id)}" data-theme-title="${escapeHTML(t.topic)}" data-current-date="${escapeHTML(t.scheduled_date || '')}" data-current-time="${escapeHTML(t.scheduled_time || '')}" title="Editar data e horário de postagem">✏️</button>` : ''}
+          </span>
+          <div class="theme-status-selector-wrap">
+            <select class="theme-status-select ${escapeHTML(t.status || 'pending')} status-${escapeHTML(t.status || 'pending')}" data-change-theme-status="${escapeHTML(t.id)}" title="Escolha o status do tema">
+              <option value="pending" ${t.status === 'pending' || !t.status ? 'selected' : ''}>⏳ Pendente</option>
+              <option value="in_production" ${t.status === 'in_production' ? 'selected' : ''}>🎬 Em Produção</option>
+              <option value="posted" ${t.status === 'posted' ? 'selected' : ''}>✅ Já Postado</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Tipo, Origem e Título -->
+        <div class="theme-card-top" style="margin-top: 8px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+          ${formatBadge}
+          ${originBadge}
+          ${recoveryBadge}
+        </div>
+        <h4 class="theme-card-title">${escapeHTML(t.topic)}</h4>
+        ${hasFullScript ? `
+          <div style="margin: 6px 0;">
+            <span class="chip-metric chip-production" style="font-size: 11px; display: inline-flex; align-items: center; gap: 4px; border-color: rgba(239, 68, 68, 0.4); background: rgba(239, 68, 68, 0.12); padding: 3px 8px; border-radius: 6px;">
+              📜 Roteiro Pronto (${charCount.toLocaleString()} carac.)
+            </span>
+          </div>
+        ` : ''}
+        ${(t.hook_angle || t.why_better || benchmarkRef) ? `
+          <details class="theme-card-details" ${wfThemesDetailsExpanded ? 'open' : ''}>
+            <summary class="theme-card-summary" title="Clique para ver ou ocultar o gancho e ângulo da estratégia">
+              <span>💡 Ver Gancho &amp; Ângulo</span>
+              <span class="theme-details-chevron">▾</span>
+            </summary>
+            <div class="theme-details-content">
+              ${benchmarkRef ? `<p class="theme-card-why" style="color: #fda4af; margin-bottom: 6px;"><strong>🎯 Gatilho Campeão:</strong> ${escapeHTML(benchmarkRef)}</p>` : ''}
+              ${t.hook_angle ? `<p class="theme-card-hook"><strong>🎣 Gancho:</strong> ${escapeHTML(t.hook_angle)}</p>` : ''}
+              ${t.why_better ? `<p class="theme-card-why"><strong>💡 Ângulo:</strong> ${escapeHTML(t.why_better)}</p>` : ''}
+            </div>
+          </details>
+        ` : ''}
+      </div>
+
+      <!-- Rodapé do Card com Ações -->
+      <div class="theme-card-footer">
+        <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+          ${isPosted 
+            ? `
+              ${(t.published_url || t.publishedUrl) ? `
+                <a href="${escapeHTML(t.published_url || t.publishedUrl)}" target="_blank" rel="noopener noreferrer" class="button ghost small" style="font-size: 11px; color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.4); background: rgba(239, 68, 68, 0.08); text-decoration: none; display: inline-flex; align-items: center; gap: 4px;" title="Abrir vídeo no YouTube">
+                  ▶️ Ver no YouTube
+                </a>
+              ` : ''}
+              <button type="button" class="button ghost small wf-theme-txt-btn" data-theme-id="${escapeHTML(t.id)}" data-theme-topic="${escapeHTML(t.topic)}" style="font-size: 11px; color: #10b981; border: 1px solid rgba(16, 185, 129, 0.35); background: rgba(16, 185, 129, 0.08);" title="Visualizar ou baixar arquivo TXT com todos os dados usados nesta produção">
+                📄 Log TXT
+              </button>
+              <button type="button" class="button ghost small" data-set-theme-status="${escapeHTML(t.id)}" data-new-status="pending" style="font-size: 11px; color: var(--muted);" title="Mudar status de volta para Pendente">↩ Reabrir como Pendente</button>
+            `
+            : hasFullScript
+              ? `<button type="button" class="button primary small" data-use-planned-theme="${escapeHTML(t.id)}" data-theme-topic="${escapeHTML(t.topic)}" data-theme-angle="${escapeHTML(t.hook_angle || '')}" data-theme-format="${escapeHTML(t.format || 'explainer')}" style="background: linear-gradient(135deg, #ef4444, #f43f5e); font-weight: 600;">
+                  👉 Seguir Fluxo (Roteiro Pronto)
+                 </button>`
+              : `<button type="button" class="button primary small" data-use-planned-theme="${escapeHTML(t.id)}" data-theme-topic="${escapeHTML(t.topic)}" data-theme-angle="${escapeHTML(t.hook_angle || '')}" data-theme-format="${escapeHTML(t.format || 'explainer')}">
+                  👉 Produzir Roteiro
+                 </button>`
+          }
+        </div>
+        <button type="button" class="button ghost small" data-delete-planned-theme="${escapeHTML(t.id)}" title="${t.status === 'posted' ? 'Remover este vídeo postado da lista do painel' : t.status === 'in_production' ? 'Excluir tema em produção' : 'Excluir tema pendente'}" style="color: var(--red); padding: 4px 8px; font-size: 12px;">
+          🗑️
+        </button>
+      </div>
+    </div>
+  `;
+}
+
 function renderWorkflowPlannedThemes(themes, filter = 'all', formatFilter = 'all') {
   const emptyState = $('#wf-themes-empty');
   const list = $('#wf-themes-list');
@@ -4760,8 +5105,6 @@ function renderWorkflowPlannedThemes(themes, filter = 'all', formatFilter = 'all
 
   const currentStatusFilter = filter || wfThemesCurrentFilter || 'all';
   const currentFmtFilter = formatFilter || wfThemesCurrentFormatFilter || 'all';
-
-  const isShortTheme = (t) => t.format === 'short' || /#shorts?/i.test(t.topic || '');
 
   const filtered = (themes || []).filter(t => {
     const matchesStatus = currentStatusFilter === 'all' || t.status === currentStatusFilter;
@@ -4772,11 +5115,47 @@ function renderWorkflowPlannedThemes(themes, filter = 'all', formatFilter = 'all
     return matchesStatus && matchesFormat;
   });
 
-  if (filtered.length === 0) {
+  // Atualiza abas do escopo temporal (Hoje & Próximos vs Histórico Completo)
+  $$('[data-filter-scope]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.filterScope === wfThemesScope);
+  });
+
+  // Atualiza abas do modo de visualização (Por Dia vs Grade Geral)
+  $$('[data-filter-view-mode]').forEach(btn => {
+    const mode = btn.dataset.filterViewMode;
+    btn.classList.toggle('active', mode === wfThemesViewMode);
+  });
+
+  // Atualiza abas de direção de ordenação (Crescente vs Decrescente)
+  $$('[data-sort-direction]').forEach(btn => {
+    const dir = btn.dataset.sortDirection;
+    btn.classList.toggle('active', dir === wfThemesSortDirection);
+  });
+
+  // Separação entre itens passados (< Hoje) e itens de hoje/futuro
+  const isPastTheme = (t) => {
+    if (!t.scheduled_date || t.scheduled_date === 'sem-data') return false;
+    return getDayDiffFromToday(t.scheduled_date) < 0;
+  };
+
+  const pastItems = filtered.filter(isPastTheme);
+  const upcomingItems = filtered.filter(t => !isPastTheme(t));
+  const pastDaysSet = new Set(pastItems.map(t => t.scheduled_date));
+  const pastVideosCount = pastItems.length;
+  const pastDaysCount = pastDaysSet.size;
+
+  let displayItems = filtered;
+  if (wfThemesScope === 'upcoming') {
+    displayItems = upcomingItems;
+  }
+
+  if (displayItems.length === 0) {
     if (emptyState) {
       emptyState.classList.remove('hidden');
       let msg = 'Nenhum tema no cronograma ainda';
-      if (currentStatusFilter !== 'all') {
+      if (wfThemesScope === 'upcoming' && pastVideosCount > 0) {
+        msg = `Nenhum vídeo pendente para os próximos dias (${pastVideosCount} vídeos já postados no histórico)`;
+      } else if (currentStatusFilter !== 'all') {
         const filterName = currentStatusFilter === 'pending' ? 'Pendente' : currentStatusFilter === 'in_production' ? 'Em Produção' : 'Já Postado';
         msg = `Nenhum tema com status "${filterName}"`;
       } else if (currentFmtFilter === 'short') {
@@ -4785,7 +5164,9 @@ function renderWorkflowPlannedThemes(themes, filter = 'all', formatFilter = 'all
         msg = 'Nenhum Vídeo Longo encontrado no cronograma';
       }
       emptyState.querySelector('h4').textContent = msg;
-      emptyState.querySelector('p').textContent = 'Alterne os filtros acima para visualizar outros formatos ou planeje novos temas.';
+      emptyState.querySelector('p').innerHTML = wfThemesScope === 'upcoming' && pastVideosCount > 0
+        ? `<button type="button" class="button ghost small theme-toggle-past-btn" data-toggle-past-history="expand" style="margin-top: 10px;">📁 Ver ${pastVideosCount} vídeos no Histórico Passado</button>`
+        : 'Alterne os filtros acima para visualizar outros formatos ou planeje novos temas.';
     }
     list.classList.add('hidden');
     list.innerHTML = '';
@@ -4795,113 +5176,105 @@ function renderWorkflowPlannedThemes(themes, filter = 'all', formatFilter = 'all
   if (emptyState) emptyState.classList.add('hidden');
   list.classList.remove('hidden');
 
-  list.innerHTML = filtered.map(t => {
-    const isPosted = t.status === 'posted';
-    const dateFormatted = formatScheduleDate(t.scheduled_date);
-    const hasFullScript = Boolean(t.full_script && String(t.full_script).trim());
-    const charCount = t.script_char_count || (hasFullScript ? t.full_script.length : 0);
-    const isShort = isShortTheme(t);
-    const isAvulso = isAvulsoTheme(t);
-    const formatClass = isShort ? 'format-short' : 'format-long';
-    const formatBadge = isShort
-      ? '<span class="theme-card-format" style="background: rgba(244, 63, 94, 0.16); color: #fda4af; border: 1px solid rgba(244, 63, 94, 0.35); font-weight: 700;">⚡ Short</span>'
-      : `<span class="theme-card-format" style="background: rgba(59, 130, 246, 0.15); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.3); font-weight: 600;">🎬 ${escapeHTML(t.format || 'Vídeo Longo')}</span>`;
-
-    const originBadge = isAvulso
-      ? (isShort
-          ? '<span class="theme-origin-badge origin-avulso" title="Short / Corte enviado de forma avulsa">⚡ Corte Avulso</span>'
-          : '<span class="theme-origin-badge origin-avulso" title="Vídeo enviado de forma avulsa">📤 Envio Avulso</span>')
-      : '<span class="theme-origin-badge origin-planejado" title="Tema criado pelo planejamento editorial do canal">📋 Planejado</span>';
-
-    let benchmarkRef = t.benchmark_ref || t.benchmarkRef || '';
-    if (!benchmarkRef && t.notes) {
-      try {
-        const parsedNotes = JSON.parse(t.notes);
-        benchmarkRef = parsedNotes.benchmarkRef || '';
-      } catch (_e) {}
-    }
-    const recoveryBadge = benchmarkRef
-      ? `<span class="theme-origin-badge" style="background: rgba(244, 63, 94, 0.15); color: #f43f5e; border: 1px solid rgba(244, 63, 94, 0.35); font-weight: 600;" title="Fórmula campeã: ${escapeHTML(benchmarkRef)}">🎯 Recuperação</span>`
-      : '';
-
-    return `
-      <div class="theme-card status-${escapeHTML(t.status || 'pending')} ${formatClass}" data-theme-card-id="${escapeHTML(t.id)}">
-        <div>
-          <!-- Linha superior de Data e Status -->
-          <div class="theme-card-date-row">
-            <span class="theme-date-badge" title="${isPosted ? 'Data de postagem no YouTube' : 'Data e horário previstos de postagem'}" ${isPosted ? 'style="background: rgba(16, 185, 129, 0.12); color: #34d399; border-color: rgba(16, 185, 129, 0.3);"' : ''}>
-              📅 ${escapeHTML(dateFormatted)}${t.scheduled_time ? ` · ⏰ ${escapeHTML(t.scheduled_time)}` : ''}
-              ${!isPosted ? `<button type="button" data-edit-theme-date="${escapeHTML(t.id)}" data-theme-title="${escapeHTML(t.topic)}" data-current-date="${escapeHTML(t.scheduled_date || '')}" data-current-time="${escapeHTML(t.scheduled_time || '')}" title="Editar data e horário de postagem">✏️</button>` : ''}
-            </span>
-            <div class="theme-status-selector-wrap">
-              <select class="theme-status-select ${escapeHTML(t.status || 'pending')} status-${escapeHTML(t.status || 'pending')}" data-change-theme-status="${escapeHTML(t.id)}" title="Escolha o status do tema">
-                <option value="pending" ${t.status === 'pending' || !t.status ? 'selected' : ''}>⏳ Pendente</option>
-                <option value="in_production" ${t.status === 'in_production' ? 'selected' : ''}>🎬 Em Produção</option>
-                <option value="posted" ${t.status === 'posted' ? 'selected' : ''}>✅ Já Postado</option>
-              </select>
-            </div>
-          </div>
-
-          <!-- Tipo, Origem e Título -->
-          <div class="theme-card-top" style="margin-top: 8px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
-            ${formatBadge}
-            ${originBadge}
-            ${recoveryBadge}
-          </div>
-          <h4 class="theme-card-title">${escapeHTML(t.topic)}</h4>
-          ${hasFullScript ? `
-            <div style="margin: 6px 0;">
-              <span class="chip-metric chip-production" style="font-size: 11px; display: inline-flex; align-items: center; gap: 4px; border-color: rgba(239, 68, 68, 0.4); background: rgba(239, 68, 68, 0.12); padding: 3px 8px; border-radius: 6px;">
-                📜 Roteiro Pronto (${charCount.toLocaleString()} carac.)
-              </span>
-            </div>
-          ` : ''}
-          ${(t.hook_angle || t.why_better || benchmarkRef) ? `
-            <details class="theme-card-details" ${wfThemesDetailsExpanded ? 'open' : ''}>
-              <summary class="theme-card-summary" title="Clique para ver ou ocultar o gancho e ângulo da estratégia">
-                <span>💡 Ver Gancho &amp; Ângulo</span>
-                <span class="theme-details-chevron">▾</span>
-              </summary>
-              <div class="theme-details-content">
-                ${benchmarkRef ? `<p class="theme-card-why" style="color: #fda4af; margin-bottom: 6px;"><strong>🎯 Gatilho Campeão:</strong> ${escapeHTML(benchmarkRef)}</p>` : ''}
-                ${t.hook_angle ? `<p class="theme-card-hook"><strong>🎣 Gancho:</strong> ${escapeHTML(t.hook_angle)}</p>` : ''}
-                ${t.why_better ? `<p class="theme-card-why"><strong>💡 Ângulo:</strong> ${escapeHTML(t.why_better)}</p>` : ''}
-              </div>
-            </details>
-          ` : ''}
-        </div>
-
-        <!-- Rodapé do Card com Ações -->
-        <div class="theme-card-footer">
-          <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
-            ${isPosted 
-              ? `
-                ${(t.published_url || t.publishedUrl) ? `
-                  <a href="${escapeHTML(t.published_url || t.publishedUrl)}" target="_blank" rel="noopener noreferrer" class="button ghost small" style="font-size: 11px; color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.4); background: rgba(239, 68, 68, 0.08); text-decoration: none; display: inline-flex; align-items: center; gap: 4px;" title="Abrir vídeo no YouTube">
-                    ▶️ Ver no YouTube
-                  </a>
-                ` : ''}
-                <button type="button" class="button ghost small wf-theme-txt-btn" data-theme-id="${escapeHTML(t.id)}" data-theme-topic="${escapeHTML(t.topic)}" style="font-size: 11px; color: #10b981; border: 1px solid rgba(16, 185, 129, 0.35); background: rgba(16, 185, 129, 0.08);" title="Visualizar ou baixar arquivo TXT com todos os dados usados nesta produção">
-                  📄 Log TXT
-                </button>
-                <button type="button" class="button ghost small" data-set-theme-status="${escapeHTML(t.id)}" data-new-status="pending" style="font-size: 11px; color: var(--muted);" title="Mudar status de volta para Pendente">↩ Reabrir como Pendente</button>
-              `
-              : hasFullScript
-                ? `<button type="button" class="button primary small" data-use-planned-theme="${escapeHTML(t.id)}" data-theme-topic="${escapeHTML(t.topic)}" data-theme-angle="${escapeHTML(t.hook_angle || '')}" data-theme-format="${escapeHTML(t.format || 'explainer')}" style="background: linear-gradient(135deg, #ef4444, #f43f5e); font-weight: 600;">
-                    👉 Seguir Fluxo (Roteiro Pronto)
-                   </button>`
-                : `<button type="button" class="button primary small" data-use-planned-theme="${escapeHTML(t.id)}" data-theme-topic="${escapeHTML(t.topic)}" data-theme-angle="${escapeHTML(t.hook_angle || '')}" data-theme-format="${escapeHTML(t.format || 'explainer')}">
-                    👉 Produzir Roteiro
-                   </button>`
-            }
-          </div>
-          <button type="button" class="button ghost small" data-delete-planned-theme="${escapeHTML(t.id)}" title="${t.status === 'posted' ? 'Remover este vídeo postado da lista do painel' : t.status === 'in_production' ? 'Excluir tema em produção' : 'Excluir tema pendente'}" style="color: var(--red); padding: 4px 8px; font-size: 12px;">
-            🗑️
+  let pastBannerHTML = '';
+  if (pastVideosCount > 0) {
+    if (wfThemesScope === 'upcoming') {
+      pastBannerHTML = `
+        <div class="theme-past-history-banner">
+          <button type="button" class="theme-toggle-past-btn" data-toggle-past-history="expand" title="Clique para expandir os vídeos já postados nos dias anteriores">
+            <span>📁 <strong>Ver Histórico Passado</strong> (${pastVideosCount} vídeos já postados em ${pastDaysCount} dias anteriores)</span>
+            <span>▾</span>
           </button>
         </div>
-      </div>
+      `;
+    } else {
+      pastBannerHTML = `
+        <div class="theme-past-history-banner">
+          <button type="button" class="theme-toggle-past-btn" data-toggle-past-history="collapse" title="Clique para recolher os dias anteriores e focar de Hoje para a frente">
+            <span>🔼 <strong>Recolher Histórico Passado</strong> (Foco em Hoje &amp; Próximos)</span>
+          </button>
+        </div>
+      `;
+    }
+  }
+
+  if (wfThemesViewMode === 'grid') {
+    list.className = 'themes-cards-list';
+    const sortedFiltered = [...displayItems].sort((a, b) => {
+      const dateA = a.scheduled_date || (wfThemesSortDirection === 'asc' ? '9999-99-99' : '0000-00-00');
+      const dateB = b.scheduled_date || (wfThemesSortDirection === 'asc' ? '9999-99-99' : '0000-00-00');
+      const dateCmp = wfThemesSortDirection === 'asc' ? dateA.localeCompare(dateB) : dateB.localeCompare(dateA);
+      if (dateCmp !== 0) return dateCmp;
+      const timeA = a.scheduled_time || '99:99';
+      const timeB = b.scheduled_time || '99:99';
+      return timeA.localeCompare(timeB);
+    });
+    const cardsHTML = sortedFiltered.map(t => renderThemeCardItemHTML(t, false)).join('');
+    list.innerHTML = wfThemesSortDirection === 'asc'
+      ? `${pastBannerHTML}${cardsHTML}`
+      : `${cardsHTML}${pastBannerHTML}`;
+    return;
+  }
+
+  // Modo 'by_day': Agrupa por data de publicação
+  list.className = 'themes-by-day-list';
+
+  const groupsByDate = {};
+  displayItems.forEach(t => {
+    const dateKey = t.scheduled_date || 'sem-data';
+    if (!groupsByDate[dateKey]) {
+      groupsByDate[dateKey] = [];
+    }
+    groupsByDate[dateKey].push(t);
+  });
+
+  // Ordena datas: se 'asc', datas mais antigas primeiro (06, 07, 08, 09...); se 'desc', mais recentes no topo (09, 08, 07...)
+  const sortedDates = Object.keys(groupsByDate).sort((a, b) => {
+    if (a === 'sem-data') return 1;
+    if (b === 'sem-data') return -1;
+    return wfThemesSortDirection === 'asc' ? a.localeCompare(b) : b.localeCompare(a);
+  });
+
+  const dayGroupsHTML = sortedDates.map(dateKey => {
+    const dayThemes = groupsByDate[dateKey];
+    // Ordena pelo horário previsto crescente (04:30, 07:00, 09:30, 12:00, 14:30, 16:00...)
+    dayThemes.sort((a, b) => {
+      const timeA = a.scheduled_time || '99:99';
+      const timeB = b.scheduled_time || '99:99';
+      return timeA.localeCompare(timeB);
+    });
+
+    const headerInfo = formatDayGroupHeader(dateKey);
+    const totalCount = dayThemes.length;
+    const shortCount = dayThemes.filter(isShortTheme).length;
+    const longCount = totalCount - shortCount;
+    const allPosted = dayThemes.every(t => t.status === 'posted');
+
+    return `
+      <section class="theme-day-group ${headerInfo.isToday ? 'is-today' : ''} ${headerInfo.isPast ? 'is-past' : ''}" data-day-group="${escapeHTML(dateKey)}">
+        <header class="theme-day-header">
+          <div class="theme-day-title-wrap">
+            <span class="theme-day-calendar-icon">📅</span>
+            <h3 class="theme-day-title">${escapeHTML(headerInfo.title)}</h3>
+            ${headerInfo.badgeText ? `<span class="theme-day-relative-badge ${escapeHTML(headerInfo.badgeClass)}">${escapeHTML(headerInfo.badgeText)}</span>` : ''}
+          </div>
+          <div class="theme-day-meta-pills">
+            <span class="day-pill count-pill">${totalCount} vídeo${totalCount > 1 ? 's' : ''}</span>
+            ${shortCount > 0 ? `<span class="day-pill short-pill">${shortCount} corte${shortCount > 1 ? 's' : ''}</span>` : ''}
+            ${longCount > 0 ? `<span class="day-pill long-pill">${longCount} longo${longCount > 1 ? 's' : ''}</span>` : ''}
+            ${allPosted ? `<span class="day-pill posted-pill">✅ 100% Postado</span>` : ''}
+          </div>
+        </header>
+        <div class="theme-day-grid">
+          ${dayThemes.map(t => renderThemeCardItemHTML(t, true)).join('')}
+        </div>
+      </section>
     `;
   }).join('');
+
+  list.innerHTML = wfThemesSortDirection === 'asc'
+    ? `${pastBannerHTML}${dayGroupsHTML}`
+    : `${dayGroupsHTML}${pastBannerHTML}`;
 }
 
 let wfThemesDetailsExpanded = false;
@@ -5268,62 +5641,354 @@ $('#wf-deduplicate-themes-btn')?.addEventListener('click', async () => {
   }
 });
 
-// Aplica tema planejado selecionado ao estúdio (roteiro, agendamento e blocos)
-function applyThemeToWorkflowStudio(currentTheme, { topic, angle, format }) {
+// Renderiza o card do tema ativo na Etapa 1
+function renderWorkflowActiveThemeCard() {
+  const container = $('#wf-active-theme-display');
+  if (!container) return;
+
+  const topicInputVal = $('#wf-script-topic')?.value?.trim() || '';
+  const topic = topicInputVal || wfState.script?.topic || '';
+  const currentTheme = wfState.currentTheme || (Array.isArray(wfPlannedThemes) ? wfPlannedThemes : []).find(t => 
+    t.id === wfState.currentThemeId || (t.topic && topic && t.topic.toLowerCase() === topic.toLowerCase())
+  );
+
+  const uploadTimeVal = $('#wf-upload-time')?.value || '';
+
+  if (topic || currentTheme) {
+    const isShort = isShortTheme(currentTheme || { topic });
+    const fmtBadge = isShort
+      ? '<span class="theme-card-format" style="background: rgba(244, 63, 94, 0.16); color: #fda4af; border: 1px solid rgba(244, 63, 94, 0.35); font-weight: 700;">⚡ Short</span>'
+      : `<span class="theme-card-format" style="background: rgba(59, 130, 246, 0.15); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.3); font-weight: 600;">🎬 ${escapeHTML(currentTheme?.format || 'Vídeo Longo')}</span>`;
+
+    // Identificação de Data e Origem com clareza total
+    let dateBadge = '';
+    let originBadge = '';
+    const hasCronogramaDate = Boolean(currentTheme?.scheduled_date);
+    
+    if (hasCronogramaDate) {
+      const dateText = formatScheduleDate(currentTheme.scheduled_date);
+      const timeText = currentTheme.scheduled_time ? ` · ⏰ ${escapeHTML(currentTheme.scheduled_time)}` : '';
+      dateBadge = `<span style="font-size: 12px; color: #10b981; font-weight: 700; background: rgba(16, 185, 129, 0.14); border: 1px solid rgba(16, 185, 129, 0.3); padding: 3px 8px; border-radius: 6px;">📅 Cronograma: ${dateText}${timeText}</span>`;
+      originBadge = `<span style="font-size: 11px; color: #93c5fd; background: rgba(59, 130, 246, 0.12); padding: 2px 7px; border-radius: 4px; font-weight: 600;">📌 Vídeo Oficial do Canal</span>`;
+    } else if (uploadTimeVal) {
+      const parts = uploadTimeVal.split('T');
+      const dFormatted = formatScheduleDate(parts[0]);
+      const tFormatted = parts[1] ? ` · ⏰ ${parts[1].slice(0, 5)}` : '';
+      dateBadge = `<span style="font-size: 12px; color: #38bdf8; font-weight: 600; background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.3); padding: 3px 8px; border-radius: 6px;">⏰ Horário Definido: ${dFormatted}${tFormatted}</span>`;
+      originBadge = `<span style="font-size: 11px; color: #fbbf24; background: rgba(251, 191, 36, 0.12); border: 1px solid rgba(251, 191, 36, 0.25); padding: 2px 7px; border-radius: 4px; font-weight: 600;">⚠️ Produção Avulsa (Roteiro Livre)</span>`;
+    } else {
+      dateBadge = `<span style="font-size: 11.5px; color: #fbbf24; font-weight: 600; background: rgba(251, 191, 36, 0.12); border: 1px solid rgba(251, 191, 36, 0.3); padding: 3px 8px; border-radius: 6px;">⚠️ Sem data definida no Cronograma</span>`;
+      originBadge = `<span style="font-size: 11px; color: #fbbf24; background: rgba(251, 191, 36, 0.12); border: 1px solid rgba(251, 191, 36, 0.25); padding: 2px 7px; border-radius: 4px; font-weight: 600;">⚠️ Produção Avulsa (Roteiro Livre)</span>`;
+    }
+
+    // Progresso dos Artefatos
+    const scriptChars = wfState.script?.totalCharacters || $('#wf-out-full-script-text')?.textContent?.length || 0;
+    const hasScript = scriptChars > 500;
+    const narrationCount = Array.isArray(wfState.narrationBlocks) ? wfState.narrationBlocks.length : (wfState.script?.narrationBlocks?.length || 0);
+    const hasGf = Array.isArray(wfState.googleFlowPrompts) && wfState.googleFlowPrompts.length > 0;
+
+    container.innerHTML = `
+      <div style="background: linear-gradient(135deg, rgba(255, 77, 94, 0.08) 0%, rgba(18, 22, 34, 0.88) 100%); border: 1px solid rgba(255, 77, 94, 0.32); border-radius: 12px; padding: 16px 20px; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap;">
+        <div style="display: flex; flex-direction: column; gap: 8px; flex: 1; min-width: 280px;">
+          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+            ${fmtBadge}
+            ${dateBadge}
+            ${originBadge}
+            <span class="status-pill info" style="font-size: 11px;">⚙️ Editando no Estúdio</span>
+          </div>
+
+          <h3 style="margin: 0; font-size: 16px; font-weight: 700; color: #fff; line-height: 1.35;">
+            ${escapeHTML(topic || currentTheme?.topic || 'Tema em Produção')}
+          </h3>
+
+          ${(currentTheme?.hook_angle || currentTheme?.why_better) ? `
+            <p style="margin: 0; font-size: 12px; color: var(--text-2); line-height: 1.4;">
+              ${currentTheme.hook_angle ? `<strong>🎣 Gancho:</strong> ${escapeHTML(currentTheme.hook_angle)} ` : ''}
+              ${currentTheme.why_better ? `<strong>💡 Ângulo:</strong> ${escapeHTML(currentTheme.why_better)}` : ''}
+            </p>
+          ` : ''}
+
+          <!-- Linha de Status de Conclusão do Vídeo -->
+          <div style="display: flex; align-items: center; gap: 12px; font-size: 11.5px; color: var(--text-2); margin-top: 4px; flex-wrap: wrap;">
+            <span><strong>Roteiro:</strong> ${hasScript ? `<span style="color: #10b981; font-weight: 600;">✓ Pronto (${scriptChars.toLocaleString('pt-BR')} carac.)</span>` : '<span style="color: var(--muted);">⏳ Não gerado</span>'}</span>
+            <span>·</span>
+            <span><strong>Narração:</strong> ${narrationCount > 0 ? `<span style="color: #10b981; font-weight: 600;">✓ ${narrationCount} Blocos</span>` : '<span style="color: var(--muted);">⏳ Não gerada</span>'}</span>
+            <span>·</span>
+            <span><strong>Imagens:</strong> ${hasGf ? '<span style="color: #10b981; font-weight: 600;">✓ Prompts Gerados</span>' : '<span style="color: var(--muted);">⏳ Pendente</span>'}</span>
+          </div>
+        </div>
+
+        <!-- Ações do Card -->
+        <div style="display: flex; flex-direction: column; gap: 8px; align-items: flex-end; justify-content: center;">
+          <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+            <button type="button" class="button primary small" id="wf-pick-theme-quick-btn" style="font-size: 12px; font-weight: 600; display: inline-flex; align-items: center; gap: 5px; background: linear-gradient(135deg, #3b82f6, #06b6d4);">
+              📑 Escolher Vídeo do Cronograma
+            </button>
+            <a href="#calendar" class="button secondary small" style="text-decoration: none; font-size: 12px; display: inline-flex; align-items: center; gap: 5px;">
+              📅 Ver Calendário Completo
+            </a>
+            <button type="button" class="button ghost small danger" id="wf-detach-theme-btn" style="font-size: 12px;" title="Limpar e desvincular o tema atual deste estúdio">
+              Limpar / Trocar
+            </button>
+          </div>
+          ${!hasCronogramaDate ? `
+            <span style="font-size: 11px; color: var(--muted); text-align: right;">
+              💡 Clique em <em>Escolher Vídeo do Cronograma</em> para associar a uma data oficial.
+            </span>
+          ` : ''}
+        </div>
+      </div>
+    `;
+  } else {
+    container.innerHTML = `
+      <div style="background: rgba(255, 255, 255, 0.03); border: 1px dashed rgba(255, 255, 255, 0.14); border-radius: 12px; padding: 16px 20px; display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;">
+        <div>
+          <h4 style="margin: 0 0 4px; font-size: 14px; font-weight: 600; color: var(--text);">Nenhum tema do cronograma selecionado</h4>
+          <p style="margin: 0; font-size: 12.5px; color: var(--text-2);">Escolha qual vídeo do cronograma deseja produzir hoje, ou digite um tema na Etapa 2 abaixo.</p>
+        </div>
+        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+          <button type="button" class="button primary small" id="wf-pick-theme-quick-btn" style="font-size: 12.5px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; background: linear-gradient(135deg, #3b82f6, #06b6d4);">
+            📑 Escolher Vídeo do Cronograma
+          </button>
+          <a href="#calendar" class="button secondary small" style="text-decoration: none; font-weight: 600; display: inline-flex; align-items: center; gap: 6px;">
+            📅 Ver Calendário Completo
+          </a>
+        </div>
+      </div>
+    `;
+  }
+}
+
+// Renderiza a barra de abas de produções ativas simultâneas
+function renderActiveProductionsBar() {
+  const container = $('#wf-active-productions-bar');
+  if (!container) return;
+
+  const topicInputVal = $('#wf-script-topic')?.value?.trim() || '';
+  const inProdThemes = (Array.isArray(wfPlannedThemes) ? wfPlannedThemes : []).filter(t => 
+    t.status === 'in_production' || t.id === wfState.currentThemeId || (t.full_script && t.status !== 'posted') || (t.production_data && t.status !== 'posted')
+  );
+
+  // Se o tema atual não é um tema do banco com status 'in_production', mas tem tópico ou roteiro, adiciona aos ativos
+  if (topicInputVal && !inProdThemes.some(t => t.id === wfState.currentThemeId || (t.topic && t.topic.toLowerCase() === topicInputVal.toLowerCase()))) {
+    inProdThemes.unshift({
+      id: wfState.currentThemeId || 'current_draft',
+      topic: topicInputVal,
+      scheduled_date: wfState.scheduledDate || ($('#wf-upload-time')?.value ? $('#wf-upload-time').value.split('T')[0] : null),
+      scheduled_time: wfState.scheduledTime || ($('#wf-upload-time')?.value ? $('#wf-upload-time').value.split('T')[1]?.slice(0, 5) : null),
+      status: 'in_production',
+      format: $('#wf-script-format')?.value || 'explainer',
+      full_script: wfState.script?.fullScript || null,
+      google_flow_prompts: wfState.googleFlowPrompts
+    });
+  }
+
+  if (inProdThemes.length === 0) {
+    container.innerHTML = `
+      <div class="active-productions-header" style="padding: 6px 12px;">
+        <div class="active-productions-title">
+          <span>🎬</span>
+          <span style="font-size: 12px; color: var(--text-2);">Produção Simultânea de Vídeos</span>
+        </div>
+        <button type="button" class="prod-tab-add-btn" id="wf-open-parallel-modal-btn" title="Iniciar a produção de outro vídeo em paralelo">
+          <span>＋ Produzir Vídeo do Cronograma</span>
+        </button>
+      </div>
+    `;
+    container.classList.remove('hidden');
+    return;
+  }
+
+  container.classList.remove('hidden');
+
+  container.innerHTML = `
+    <div class="active-productions-header">
+      <div class="active-productions-title">
+        <span>🎬</span>
+        <span>Vídeos em Produção Simultânea (${inProdThemes.length})</span>
+      </div>
+      <button type="button" class="prod-tab-add-btn" id="wf-open-parallel-modal-btn" title="Iniciar a produção de outro vídeo em paralelo (o vídeo atual será salvo automaticamente)">
+        <span>＋ Iniciar Outro Vídeo em Paralelo</span>
+      </button>
+    </div>
+    <div class="active-productions-list">
+      ${inProdThemes.map(t => {
+        const isActive = t.id === wfState.currentThemeId || (t.id === 'current_draft' && !wfState.currentThemeId);
+        const dateStr = t.scheduled_date ? formatScheduleDate(t.scheduled_date) : 'A Definir';
+        const topicEsc = escapeHTML(t.topic || 'Sem título');
+        const hasScript = Boolean(t.full_script && String(t.full_script).trim());
+        const hasGf = Boolean(t.google_flow_prompts);
+        return `
+          <button type="button" class="prod-tab-chip ${isActive ? 'active' : ''}" data-switch-prod-id="${escapeHTML(t.id)}" title="${topicEsc} (${dateStr})">
+            <span class="prod-tab-dot"></span>
+            <span class="prod-tab-date">${escapeHTML(dateStr)}</span>
+            <span class="prod-tab-title">${topicEsc}</span>
+            ${hasScript ? '<span style="font-size: 10px; color: #10b981; font-weight: 700;" title="Roteiro pronto">✓ Roteiro</span>' : ''}
+            ${hasGf ? '<span style="font-size: 10px; color: #38bdf8; font-weight: 700;" title="Prompts de imagem gerados">✓ Imagens</span>' : ''}
+            ${isActive ? '<span style="font-size: 10px; background: rgba(239, 68, 68, 0.3); color: #fff; padding: 1px 5px; border-radius: 4px; font-weight: 700;">Ativo</span>' : ''}
+          </button>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function openParallelProductionModal({ mode = 'parallel' } = {}) {
+  const dialog = $('#wf-pick-parallel-theme-dialog');
+  const listEl = $('#wf-parallel-themes-list');
+  if (!dialog || !listEl) return;
+
+  const headerTitle = dialog.querySelector('h3');
+  const eyebrow = dialog.querySelector('.eyebrow');
+  const desc = dialog.querySelector('p');
+
+  if (mode === 'switch') {
+    if (eyebrow) eyebrow.textContent = 'CRONOGRAMA EDITORIAL';
+    if (headerTitle) headerTitle.textContent = 'Escolher Vídeo do Cronograma para Editar';
+    if (desc) desc.innerHTML = 'Selecione qual vídeo planejado do cronograma você deseja carregar no Estúdio. O vídeo atual será <strong>salvo automaticamente</strong> antes da troca:';
+  } else {
+    if (eyebrow) eyebrow.textContent = 'PRODUÇÃO SIMULTÂNEA';
+    if (headerTitle) headerTitle.textContent = 'Iniciar Outro Vídeo em Paralelo';
+    if (desc) desc.innerHTML = 'O vídeo atual é <strong>salvo automaticamente</strong> no banco de dados com todo o roteiro, narrações e prompts. Escolha qual vídeo do cronograma deseja começar a produzir em paralelo:';
+  }
+
+  // Lista todos os temas pendentes ou em produção do cronograma (que ainda não foram postados)
+  const availableThemes = (Array.isArray(wfPlannedThemes) ? wfPlannedThemes : [])
+    .filter(t => t.status !== 'posted')
+    .sort((a, b) => (a.scheduled_date || '9999').localeCompare(b.scheduled_date || '9999'));
+
+  if (availableThemes.length === 0) {
+    listEl.innerHTML = `
+      <div style="padding: 24px; text-align: center; color: var(--text-2); font-size: 13px;">
+        Nenhum tema pendente disponível no momento. Crie ou importe novos temas no Calendário Editorial!
+      </div>
+    `;
+  } else {
+    listEl.innerHTML = availableThemes.map(t => {
+      const isCurrent = t.id === wfState.currentThemeId;
+      const dateStr = t.scheduled_date ? formatScheduleDate(t.scheduled_date) : 'Sem data definida';
+      const timeStr = t.scheduled_time ? ` · ⏰ ${t.scheduled_time}` : '';
+      const isShort = t.format === 'short' || /#shorts?/i.test(t.topic || '');
+      const fmtLabel = isShort ? '⚡ Short' : '🎬 Vídeo Longo';
+      const statusLabel = t.status === 'in_production' ? '⚙️ Em Produção' : '⏳ Pendente';
+
+      return `
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; background: ${isCurrent ? 'rgba(59, 130, 246, 0.12)' : 'rgba(255, 255, 255, 0.04)'}; border: 1px solid ${isCurrent ? 'rgba(59, 130, 246, 0.4)' : 'rgba(255, 255, 255, 0.08)'}; border-radius: 8px;">
+          <div style="flex: 1; min-width: 0;">
+            <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 4px; flex-wrap: wrap;">
+              <span style="font-size: 11px; color: #93c5fd; font-weight: 700; background: rgba(59, 130, 246, 0.2); padding: 2px 7px; border-radius: 4px;">📅 ${escapeHTML(dateStr)}${escapeHTML(timeStr)}</span>
+              <span style="font-size: 11px; color: var(--text-2); background: rgba(255,255,255,0.06); padding: 2px 6px; border-radius: 4px;">${fmtLabel}</span>
+              <span style="font-size: 10.5px; color: ${t.status === 'in_production' ? '#38bdf8' : 'var(--muted)'};">${statusLabel}</span>
+            </div>
+            <strong style="font-size: 13.5px; color: #fff; display: block; line-height: 1.35;">${escapeHTML(t.topic)}</strong>
+            ${t.hook_angle ? `<span style="font-size: 11.5px; color: var(--text-2); display: block; margin-top: 2px;">🎣 ${escapeHTML(t.hook_angle)}</span>` : ''}
+          </div>
+          <button type="button" class="button ${isCurrent ? 'ghost' : 'primary'} small" data-start-parallel-theme-id="${escapeHTML(t.id)}" style="flex-shrink: 0; font-size: 12px; padding: 7px 14px; font-weight: 600;" ${isCurrent ? 'disabled' : ''}>
+            ${isCurrent ? '✓ Em Edição' : '🎬 Carregar no Estúdio'}
+          </button>
+        </div>
+      `;
+    }).join('');
+  }
+
+  dialog.showModal();
+}
+
+// Aplica tema planejado selecionado ao estúdio (roteiro, agendamento, prompts, SEO e blocos)
+async function applyThemeToWorkflowStudio(currentTheme, { topic, angle, format }) {
   if (ui.currentView !== 'workflow') {
     switchView('workflow');
   }
 
-  // Limpa automaticamente todos os dados residuais da produção anterior
-  resetWorkflowStudio({ keepFieldA: true, preserveTopic: topic, notify: false });
+  // AUTO-SAVE DO PROJETO ANTERIOR ANTES DE MUDAR:
+  // Se já havia um tema sendo produzido e é diferente do novo tema, salva 100% dele primeiro!
+  if (wfState.currentThemeId && currentTheme?.id && wfState.currentThemeId !== currentTheme.id) {
+    try {
+      await saveWorkflowDraft(false);
+    } catch (_savePrevErr) {
+      console.warn('Erro ao salvar tema anterior antes de alternar:', _savePrevErr);
+    }
+  }
+
+  // Busca dados completos do tema no backend se necessário
+  let fullTheme = currentTheme;
+  if (currentTheme?.id) {
+    try {
+      const resp = await fetch(`/api/workflow/planned-themes/${encodeURIComponent(currentTheme.id)}`);
+      if (resp.ok) {
+        const json = await resp.json();
+        if (json?.success && json?.theme) {
+          fullTheme = { ...currentTheme, ...json.theme };
+        }
+      }
+    } catch (_) {}
+  }
+
+  // Limpa automaticamente dados residuais da produção anterior antes de carregar o novo tema
+  resetWorkflowStudio({ keepFieldA: true, preserveTopic: topic || fullTheme?.topic || '', notify: false });
 
   const topicInput = $('#wf-script-topic');
   const angleInput = $('#wf-script-angle');
   const formatSelect = $('#wf-script-format');
 
-  if (topicInput) topicInput.value = topic || '';
-  if (angleInput) angleInput.value = angle || '';
-  if (formatSelect && format) {
-    const opt = formatSelect.querySelector(`option[value="${format.toLowerCase()}"]`);
-    if (opt) formatSelect.value = format.toLowerCase();
+  const effTopic = topic || fullTheme?.topic || '';
+  const effAngle = angle || fullTheme?.hook_angle || '';
+  const effFormat = format || fullTheme?.format || 'explainer';
+
+  if (topicInput) topicInput.value = effTopic;
+  if (angleInput) angleInput.value = effAngle;
+  if (formatSelect && effFormat) {
+    const opt = formatSelect.querySelector(`option[value="${effFormat.toLowerCase()}"]`);
+    if (opt) formatSelect.value = effFormat.toLowerCase();
   }
 
   // Memoriza o tema atual em produção e seu agendamento no estado do estúdio
-  wfState.currentThemeId = currentTheme?.id || null;
-  wfState.scheduledDate = currentTheme?.scheduled_date || null;
-  wfState.scheduledTime = currentTheme?.scheduled_time || null;
+  wfState.currentThemeId = fullTheme?.id || null;
+  wfState.currentTheme = fullTheme || null;
+  wfState.scheduledDate = fullTheme?.scheduled_date || null;
+  wfState.scheduledTime = fullTheme?.scheduled_time || null;
+  if (fullTheme?.id) {
+    try {
+      localStorage.setItem('wf_last_active_theme_id', fullTheme.id);
+    } catch (_) {}
+  }
+
+  renderWorkflowActiveThemeCard();
+  renderActiveProductionsBar();
 
   // Preenche automaticamente o campo de agendamento de upload (Data e Horário)
-  if (currentTheme?.scheduled_date) {
+  if (fullTheme?.scheduled_date) {
     const timeInput = $('#wf-upload-time');
     if (timeInput) {
-      const timePart = currentTheme.scheduled_time ? currentTheme.scheduled_time.slice(0, 5) : '18:00';
-      timeInput.value = `${currentTheme.scheduled_date}T${timePart}`;
+      const timePart = fullTheme.scheduled_time ? fullTheme.scheduled_time.slice(0, 5) : '18:00';
+      timeInput.value = `${fullTheme.scheduled_date}T${timePart}`;
     }
   }
 
-  if (currentTheme && currentTheme.status === 'pending') {
-    mutate(`/api/workflow/planned-themes/${encodeURIComponent(currentTheme.id)}`, 'PATCH', {
+  if (fullTheme && fullTheme.status === 'pending') {
+    mutate(`/api/workflow/planned-themes/${encodeURIComponent(fullTheme.id)}`, 'PATCH', {
       status: 'in_production'
-    }, `Tema em produção: "${topic}"`)
+    }, `Tema em produção: "${effTopic}"`)
       .then(() => loadWorkflowPlannedThemes())
       .catch(() => {});
   }
 
-  // Se o tema já possui roteiro total construído externamente:
-  if (currentTheme && currentTheme.full_script) {
+  let restoredItems = [];
+
+  // 1) Roteiro e Blocos de Narração
+  if (fullTheme && fullTheme.full_script) {
     let blocks = [];
-    if (currentTheme.narration_blocks) {
+    if (fullTheme.narration_blocks) {
       try {
-        blocks = typeof currentTheme.narration_blocks === 'string'
-          ? JSON.parse(currentTheme.narration_blocks)
-          : currentTheme.narration_blocks;
+        blocks = typeof fullTheme.narration_blocks === 'string'
+          ? JSON.parse(fullTheme.narration_blocks)
+          : fullTheme.narration_blocks;
       } catch (e) {
         blocks = [];
       }
     }
     if (!Array.isArray(blocks) || blocks.length === 0) {
-      const clean = currentTheme.full_script.trim();
+      const clean = fullTheme.full_script.trim();
       const half = Math.floor(clean.length / 2);
       blocks = [
         { index: 1, title: 'Bloco 1', charCount: half, text: clean.slice(0, half).trim() },
@@ -5332,32 +5997,189 @@ function applyThemeToWorkflowStudio(currentTheme, { topic, angle, format }) {
     }
 
     wfState.script = {
-      topic: currentTheme.topic,
-      hook: currentTheme.hook_angle || '',
-      fullScript: currentTheme.full_script,
-      totalCharacters: currentTheme.script_char_count || currentTheme.full_script.length,
+      topic: fullTheme.topic,
+      hook: fullTheme.hook_angle || '',
+      fullScript: fullTheme.full_script,
+      totalCharacters: fullTheme.script_char_count || fullTheme.full_script.length,
       part1Chars: blocks[0]?.charCount || 0,
       part2Chars: blocks[1]?.charCount || 0,
-      officialBible: 'Bibbia CEI 2008 (Construído Externamente)',
-      hookType: 'Roteiro Total Externo',
+      officialBible: 'Bibbia CEI 2008',
+      hookType: 'Roteiro Preservado',
       narrationBlocks: blocks
     };
+    wfState.narrationBlocks = blocks;
 
     renderWorkflowScript(wfState.script);
     renderNarrationBlocks(blocks);
+    restoredItems.push('Roteiro');
+  }
 
-    const panel = $('#wf-step-3-panel') || $('#wf-narration-blocks-container');
-    panel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    scheduleAutoSaveDraft(100);
-    const timeNotice = currentTheme.scheduled_time ? ` · ⏰ ${currentTheme.scheduled_time}` : '';
-    showToast(`Roteiro pronto carregado (${(currentTheme.script_char_count || currentTheme.full_script.length).toLocaleString()} carac.)! Agendado: ${formatScheduleDate(currentTheme.scheduled_date)}${timeNotice}.`, 'success');
-    return;
+  // 2) Prompts do Google Flow
+  if (fullTheme && fullTheme.google_flow_prompts) {
+    let gf = fullTheme.google_flow_prompts;
+    if (typeof gf === 'string') {
+      try { gf = JSON.parse(gf); } catch (_) {}
+    }
+    if (Array.isArray(gf) && gf.length > 0) {
+      wfState.googleFlowPrompts = gf;
+      if (typeof renderGoogleFlowPrompts === 'function') renderGoogleFlowPrompts(gf);
+      restoredItems.push(`${gf.length} Prompts Google Flow`);
+    }
+  }
+
+  // 3) Prompts de Thumbnail (Nano Banana)
+  if (fullTheme && fullTheme.nano_banana_prompts) {
+    let nb = fullTheme.nano_banana_prompts;
+    if (typeof nb === 'string') {
+      try { nb = JSON.parse(nb); } catch (_) {}
+    }
+    if (Array.isArray(nb) && nb.length > 0) {
+      wfState.nanoBananaPrompts = nb;
+      if (typeof renderNanoBananaVersions === 'function') renderNanoBananaVersions(nb);
+      restoredItems.push(`${nb.length} Variações Nano Banana`);
+    }
+  }
+
+  // 4) Metadados de SEO
+  if (fullTheme && fullTheme.seo_data) {
+    let seo = fullTheme.seo_data;
+    if (typeof seo === 'string') {
+      try { seo = JSON.parse(seo); } catch (_) {}
+    }
+    if (seo && typeof seo === 'object') {
+      wfState.seo = seo;
+      if (typeof renderWorkflowSEO === 'function') renderWorkflowSEO(seo);
+      if (seo.title) {
+        const titleEl = $('#wf-upload-title');
+        if (titleEl) {
+          titleEl.value = seo.title;
+          if (typeof updateTitleCharCounter === 'function') updateTitleCharCounter();
+        }
+      }
+      if (seo.description) {
+        const descEl = $('#wf-upload-description') || $('#wf-upload-desc');
+        if (descEl) {
+          descEl.value = seo.description;
+          if (typeof updateDescCharCounter === 'function') updateDescCharCounter();
+        }
+      }
+      if (seo.tags) {
+        const tagsEl = $('#wf-upload-tags');
+        if (tagsEl) {
+          tagsEl.value = Array.isArray(seo.tags) ? seo.tags.join(', ') : seo.tags;
+        }
+      }
+      if (typeof revealMetadataFields === 'function') revealMetadataFields(false);
+      restoredItems.push('SEO Completo');
+    }
+  }
+
+  // 5) Restauração de campos contextuais adicionais salvos em production_data
+  let prodData = null;
+  if (fullTheme && fullTheme.production_data) {
+    try {
+      prodData = typeof fullTheme.production_data === 'string' ? JSON.parse(fullTheme.production_data) : fullTheme.production_data;
+    } catch (_) {}
+  }
+  if (prodData) {
+    if (prodData.fieldA) {
+      const fa = $('#wf-field-a');
+      if (fa) fa.value = prodData.fieldA;
+      const label = $('#wf-field-a-btn-label');
+      if (label) label.textContent = 'Histórico Editorial Preenchido (Campo A)';
+      const icon = $('#wf-field-a-btn-icon');
+      if (icon) icon.textContent = '✓';
+    }
+    if (prodData.authorAngle) {
+      const aa = $('#wf-script-author-angle');
+      if (aa) aa.value = prodData.authorAngle;
+    }
+    if (prodData.channelPos) {
+      const cp = $('#wf-script-channel-pos');
+      if (cp) cp.value = prodData.channelPos;
+    }
+    if (prodData.leaveOut) {
+      const lo = $('#wf-script-leave-out');
+      if (lo) lo.value = prodData.leaveOut;
+    }
+    if (prodData.hookType) {
+      const ht = $('#wf-script-hook-type');
+      if (ht) ht.value = prodData.hookType;
+    }
+    if (prodData.angleFamily) {
+      const af = $('#wf-script-angle-family');
+      if (af) af.value = prodData.angleFamily;
+    }
+    if (prodData.directScript) {
+      const ds = $('#wf-direct-script-input');
+      if (ds) ds.value = prodData.directScript;
+    }
+  }
+
+  // 6 e 7) Arquivos de Vídeo e Miniatura: deixados VAZIOS para seleção limpa no Explorer
+  const videoInput = $('#wf-upload-path');
+  if (videoInput) videoInput.value = '';
+  const videoFileInput = $('#wf-video-file-input');
+  if (videoFileInput) videoFileInput.value = '';
+  $('#wf-video-selected-box')?.classList.add('hidden');
+  $('#wf-video-drop-content')?.classList.remove('hidden');
+
+  const thumbInput = $('#wf-upload-thumbnail-path');
+  if (thumbInput) thumbInput.value = '';
+  const thumbFileInput = $('#wf-thumb-file-input');
+  if (thumbFileInput) thumbFileInput.value = '';
+  const thumbImgPreview = $('#wf-thumb-img-preview');
+  if (thumbImgPreview) {
+    thumbImgPreview.src = '';
+    thumbImgPreview.classList.add('hidden');
+    thumbImgPreview.style.display = 'none';
+  }
+  $('#wf-thumb-placeholder')?.classList.remove('hidden');
+  $('#wf-remove-thumb-btn')?.classList.add('hidden');
+  const thumbStatus = $('#wf-thumb-status-msg');
+  if (thumbStatus) thumbStatus.innerHTML = '';
+
+  // 8) Banner de Aviso de Erro de Upload Anterior (se houver)
+  if (fullTheme && fullTheme.upload_error) {
+    const scheduleBanner = $('#wf-schedule-status');
+    if (scheduleBanner) {
+      scheduleBanner.classList.remove('hidden');
+      scheduleBanner.innerHTML = `
+        <div style="background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.4); border-radius: 8px; padding: 14px; margin-bottom: 12px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <span style="font-weight: 700; color: #f59e0b; font-size: 14px; display: flex; align-items: center; gap: 6px;">
+              <span>⚠️</span> <span>Tentativa Anterior NÃO foi Publicada no YouTube</span>
+            </span>
+            <button type="button" class="button ghost small" onclick="document.getElementById('wf-schedule-status').classList.add('hidden')" style="font-size: 11px; padding: 2px 8px; color: var(--text-2);">✕ Fechar</button>
+          </div>
+          <p style="margin: 0 0 8px 0; font-size: 13px; color: var(--text-1);">
+            A tentativa anterior não concluiu o upload oficial no YouTube Studio pelo seguinte motivo:
+            <br><code style="background: rgba(0,0,0,0.4); padding: 4px 8px; border-radius: 4px; color: #fca5a5; font-size: 12px; display: inline-block; margin-top: 5px; word-break: break-all;">${escapeHTML(fullTheme.upload_error)}</code>
+          </p>
+          <div style="margin: 0; font-size: 12px; color: #10b981; font-weight: 600;">
+            ✓ Roteiro, prompts, título, descrição e tags foram restaurados. Selecione o vídeo e a capa abaixo para enviar.
+          </div>
+        </div>
+      `;
+    }
   }
 
   scheduleAutoSaveDraft(100);
-  topicInput?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  const timeNotice = currentTheme?.scheduled_time ? ` (Agendado às ${currentTheme.scheduled_time})` : '';
-  showToast(`Tema preenchido para o Roteiro: "${topic}"${timeNotice}.`, 'success');
+
+  // Rolagem suave inteligente para onde o usuário deve continuar
+  if (fullTheme && (fullTheme.video_path || fullTheme.seo_data)) {
+    const uploadForm = $('#wf-schedule-form') || $('#wf-step-8-panel');
+    uploadForm?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } else if (fullTheme && fullTheme.full_script) {
+    const panel = $('#wf-step-3-panel') || $('#wf-narration-blocks-container');
+    panel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } else {
+    topicInput?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  const itemsDesc = restoredItems.length > 0 ? ` (${restoredItems.join(', ')})` : '';
+  const timeNotice = fullTheme?.scheduled_time ? ` · ⏰ ${fullTheme.scheduled_time}` : '';
+  showToast(`Tema carregado no Modelador: "${effTopic}"${itemsDesc}${timeNotice}.`, 'success', 6000);
 }
 
 // Cliques gerais da Etapa 1 (Filtros, Alternar Status, Editar Data, Excluir, Produzir e Exportar)
@@ -5376,6 +6198,51 @@ document.addEventListener('click', (e) => {
     $$('[data-filter-format]').forEach(tab => tab.classList.remove('active'));
     formatTab.classList.add('active');
     wfThemesCurrentFormatFilter = formatTab.dataset.filterFormat || 'all';
+    renderWorkflowPlannedThemes(wfPlannedThemes, wfThemesCurrentFilter, wfThemesCurrentFormatFilter);
+    return;
+  }
+
+  const viewModeTab = e.target.closest('[data-filter-view-mode]');
+  if (viewModeTab) {
+    const newMode = viewModeTab.dataset.filterViewMode || 'by_day';
+    wfThemesViewMode = newMode;
+    localStorage.setItem('wf_themes_view_mode', newMode);
+    $$('[data-filter-view-mode]').forEach(tab => tab.classList.remove('active'));
+    viewModeTab.classList.add('active');
+    renderWorkflowPlannedThemes(wfPlannedThemes, wfThemesCurrentFilter, wfThemesCurrentFormatFilter);
+    return;
+  }
+
+  const sortDirectionTab = e.target.closest('[data-sort-direction]');
+  if (sortDirectionTab) {
+    const newDir = sortDirectionTab.dataset.sortDirection || 'asc';
+    wfThemesSortDirection = newDir;
+    localStorage.setItem('wf_themes_sort_direction', newDir);
+    $$('[data-sort-direction]').forEach(tab => tab.classList.remove('active'));
+    sortDirectionTab.classList.add('active');
+    renderWorkflowPlannedThemes(wfPlannedThemes, wfThemesCurrentFilter, wfThemesCurrentFormatFilter);
+    return;
+  }
+
+  const scopeTab = e.target.closest('[data-filter-scope]');
+  if (scopeTab) {
+    const newScope = scopeTab.dataset.filterScope || 'upcoming';
+    wfThemesScope = newScope;
+    localStorage.setItem('wf_themes_scope', newScope);
+    $$('[data-filter-scope]').forEach(tab => tab.classList.remove('active'));
+    scopeTab.classList.add('active');
+    renderWorkflowPlannedThemes(wfPlannedThemes, wfThemesCurrentFilter, wfThemesCurrentFormatFilter);
+    return;
+  }
+
+  const togglePastBtn = e.target.closest('[data-toggle-past-history]');
+  if (togglePastBtn) {
+    const action = togglePastBtn.dataset.togglePastHistory;
+    wfThemesScope = action === 'expand' ? 'all' : 'upcoming';
+    localStorage.setItem('wf_themes_scope', wfThemesScope);
+    $$('[data-filter-scope]').forEach(tab => {
+      tab.classList.toggle('active', tab.dataset.filterScope === wfThemesScope);
+    });
     renderWorkflowPlannedThemes(wfPlannedThemes, wfThemesCurrentFilter, wfThemesCurrentFormatFilter);
     return;
   }
@@ -5498,6 +6365,88 @@ document.addEventListener('click', (e) => {
 
     copyToClipboard(header + rows, exportBtn);
     showToast('📋 Lista copiada! Basta colar no Excel (Ctrl + V).', 'success');
+    return;
+  }
+
+  // Alternância rápida entre múltiplos projetos em produção
+  const switchProdBtn = e.target.closest('[data-switch-prod-id]');
+  if (switchProdBtn) {
+    const targetId = switchProdBtn.dataset.switchProdId;
+    if (targetId && targetId !== wfState.currentThemeId) {
+      const targetTheme = (Array.isArray(wfPlannedThemes) ? wfPlannedThemes : []).find(t => t.id === targetId);
+      if (targetTheme) {
+        applyThemeToWorkflowStudio(targetTheme, {
+          topic: targetTheme.topic,
+          angle: targetTheme.hook_angle,
+          format: targetTheme.format
+        });
+      }
+    }
+    return;
+  }
+
+  // Abrir modal de produção paralela
+  const openParallelBtn = e.target.closest('#wf-open-parallel-modal-btn');
+  if (openParallelBtn) {
+    openParallelProductionModal();
+    return;
+  }
+
+  // Iniciar produção de um vídeo específico da listagem paralela
+  const startParallelBtn = e.target.closest('[data-start-parallel-theme-id]');
+  if (startParallelBtn) {
+    const targetId = startParallelBtn.dataset.startParallelThemeId;
+    const targetTheme = (Array.isArray(wfPlannedThemes) ? wfPlannedThemes : []).find(t => t.id === targetId);
+    if (targetTheme) {
+      const modal = $('#wf-pick-parallel-theme-dialog');
+      modal?.close();
+
+      const isPending = !targetTheme?.status || targetTheme?.status === 'pending';
+      const hasRecordedTime = targetTheme.scheduled_time && String(targetTheme.scheduled_time).trim().length >= 4;
+
+      if (isPending && !hasRecordedTime) {
+        const askDialog = $('#wf-ask-post-time-dialog');
+        if (askDialog) {
+          $('#wf-ask-time-theme-id').value = targetId;
+          $('#wf-ask-time-theme-title').textContent = targetTheme.topic || 'Tema Selecionado';
+          const dateText = targetTheme.scheduled_date ? formatScheduleDate(targetTheme.scheduled_date) : 'Sem data definida';
+          $('#wf-ask-time-date-notice').textContent = `📅 Data prevista no cronograma: ${dateText}`;
+          $('#wf-ask-time-input').value = '18:00';
+          askDialog.showModal();
+          return;
+        }
+      }
+
+      applyThemeToWorkflowStudio(targetTheme, {
+        topic: targetTheme.topic,
+        angle: targetTheme.hook_angle,
+        format: targetTheme.format
+      });
+    }
+    return;
+  }
+
+  // Abrir seletor rápido de vídeos do cronograma diretamente do card
+  const pickThemeQuickBtn = e.target.closest('#wf-pick-theme-quick-btn');
+  if (pickThemeQuickBtn) {
+    e.preventDefault();
+    openParallelProductionModal({ mode: 'switch' });
+    return;
+  }
+
+  // Desvincular tema ativo
+  const detachThemeBtn = e.target.closest('#wf-detach-theme-btn');
+  if (detachThemeBtn) {
+    if (confirm('Deseja desvincular o tema atual deste estúdio? A produção atual já foi gravada com segurança no cronograma.')) {
+      saveWorkflowDraft(false).then(() => {
+        wfState.currentThemeId = null;
+        wfState.currentTheme = null;
+        localStorage.removeItem('wf_last_active_theme_id');
+        renderWorkflowActiveThemeCard();
+        renderActiveProductionsBar();
+        showToast('Tema desvinculado. O estúdio está livre para novos testes.', 'info');
+      });
+    }
     return;
   }
 });
@@ -5975,6 +6924,11 @@ function renderNarrationBlocks(blocks) {
       estTime: estimateSpeechDuration(cleanedText)
     };
   });
+
+  wfState.narrationBlocks = cleanedBlocks;
+  if (wfState.script) {
+    wfState.script.narrationBlocks = cleanedBlocks;
+  }
 
   const totalChars = cleanedBlocks.reduce((acc, b) => acc + b.charCount, 0);
   const totalWords = cleanedBlocks.reduce((acc, b) => acc + b.text.split(/\s+/).filter(Boolean).length, 0);
@@ -7050,6 +8004,71 @@ $('#wf-paste-clear-btn')?.addEventListener('click', () => {
   showToast('Campos do modal limpos!', 'info');
 });
 
+async function handlePasteFromClipboard() {
+  const btn = $('#wf-paste-from-clipboard-btn');
+  const targetArea = $('#wf-paste-raw-textarea') || pasteRawTextarea;
+  const originalHtml = btn ? btn.innerHTML : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '⏳ Lendo...';
+  }
+  try {
+    let text = '';
+    // 1. Tenta API moderna do navegador
+    if (navigator.clipboard && typeof navigator.clipboard.readText === 'function') {
+      try {
+        text = await navigator.clipboard.readText();
+      } catch (readErr) {
+        console.warn('Leitura via navigator.clipboard.readText não autorizada:', readErr);
+      }
+    }
+
+    // 2. Fallback via backend Windows (Get-Clipboard local do sistema)
+    if (!text || !text.trim()) {
+      try {
+        const res = await fetch('/api/clipboard/read');
+        const data = await res.json();
+        if (data && data.success && data.text) {
+          text = data.text;
+        }
+      } catch (beErr) {
+        console.warn('Falha na rota /api/clipboard/read:', beErr);
+      }
+    }
+
+    // 3. Fallback clássico document.execCommand
+    if (!text && targetArea) {
+      targetArea.focus();
+      try {
+        const ok = document.execCommand('paste');
+        if (ok) text = targetArea.value;
+      } catch (_) {}
+    }
+
+    if (text && text.trim()) {
+      if (targetArea) {
+        targetArea.value = text;
+        processPastedMetadataText();
+        showToast('📋 Metadados colados do clipboard com sucesso!', 'success');
+      }
+    } else {
+      showToast('Não foi possível ler o clipboard diretamente. Cole com Ctrl+V na caixa de texto.', 'warning');
+      targetArea?.focus();
+    }
+  } catch (err) {
+    console.error('Erro ao colar do clipboard:', err);
+    showToast('Pressione Ctrl+V para colar diretamente na caixa de texto.', 'info');
+    targetArea?.focus();
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = originalHtml || '📋 Colar do Clipboard';
+    }
+  }
+}
+
+$('#wf-paste-from-clipboard-btn')?.addEventListener('click', handlePasteFromClipboard);
+
 pasteTabBtn?.addEventListener('click', () => {
   if (pasteTabBtn) {
     pasteTabBtn.style.background = 'var(--surface-2)';
@@ -7558,6 +8577,10 @@ $('#wf-schedule-form')?.addEventListener('submit', async (e) => {
     language
   });
 
+  const uploadFormat = $('#wf-upload-format')?.value || wfCurrentUploadFormat || 'explainer';
+  const isUploadingShort = uploadFormat === 'short' || wfStudioMode === 'cortes' || /#shorts?/i.test(title || '');
+  let matchedShortThemeId = null;
+
   try {
     const postRes = await mutate('/api/workflow/schedule-upload', 'POST', {
       videoPath,
@@ -7568,13 +8591,38 @@ $('#wf-schedule-form')?.addEventListener('submit', async (e) => {
       tags,
       containsSyntheticMedia,
       language,
-      format: $('#wf-upload-format')?.value || wfCurrentUploadFormat || 'explainer',
-      themeId: wfState.currentThemeId || null,
+      format: isUploadingShort ? 'short' : uploadFormat,
+      themeId: (() => {
+        // Se estiver no modo Envio de Cortes ou enviando um Short, NUNCA vincula ao tema longo do estúdio
+        if (isUploadingShort) {
+          const matchShort = Array.isArray(wfPlannedThemes) ? wfPlannedThemes.find(t => {
+            const isThemeShort = t.format === 'short' || /#shorts?/i.test(t.topic || '');
+            if (!isThemeShort) return false;
+            if (!t.topic || !title) return false;
+            const tLower = t.topic.toLowerCase();
+            const titleLower = title.toLowerCase();
+            return tLower === titleLower || titleLower.includes(tLower) || tLower.includes(titleLower);
+          }) : null;
+          matchedShortThemeId = matchShort?.id || null;
+          return matchedShortThemeId;
+        }
+
+        // Fluxo normal de vídeo longo
+        if (wfState.currentThemeId) return wfState.currentThemeId;
+        const matchLong = Array.isArray(wfPlannedThemes) ? wfPlannedThemes.find(t => {
+          if (t.format === 'short') return false;
+          if (!t.topic || !title) return false;
+          const tLower = t.topic.toLowerCase();
+          const titleLower = title.toLowerCase();
+          return tLower === titleLower || titleLower.includes(tLower) || tLower.includes(titleLower);
+        }) : null;
+        return matchLong?.id || null;
+      })(),
       channelName: bundlePayload.channelName,
-      script: bundlePayload.script,
-      googleFlowPrompts: bundlePayload.googleFlowPrompts,
-      nanoBananaPrompts: bundlePayload.nanoBananaPrompts,
-      thumbnailPrompt: bundlePayload.thumbnailPrompt,
+      script: isUploadingShort && (!wfState.currentTheme || wfState.currentTheme.format !== 'short') ? null : bundlePayload.script,
+      googleFlowPrompts: isUploadingShort && (!wfState.currentTheme || wfState.currentTheme.format !== 'short') ? null : bundlePayload.googleFlowPrompts,
+      nanoBananaPrompts: isUploadingShort && (!wfState.currentTheme || wfState.currentTheme.format !== 'short') ? null : bundlePayload.nanoBananaPrompts,
+      thumbnailPrompt: isUploadingShort && (!wfState.currentTheme || wfState.currentTheme.format !== 'short') ? null : bundlePayload.thumbnailPrompt,
       seo: bundlePayload.seo,
       bundle: bundlePayload
     }, '🎉 Vídeo programado no canal do YouTube com sucesso!');
@@ -7675,9 +8723,111 @@ $('#wf-schedule-form')?.addEventListener('submit', async (e) => {
       banner.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
 
-    // Limpa o rascunho salvo pois a produção foi concluída e agendada com sucesso
-    clearWorkflowDraft(false);
-    resetWorkflowStudio({ keepFieldA: true, preserveTopic: '', preserveLog: true, notify: false });
+    if (isUploadingShort) {
+      // =========================================================================
+      // BLINDAGEM DO VÍDEO LONGO EM ANDAMENTO:
+      // O Short foi postado com sucesso. O vídeo longo que está em edição
+      // (roteiro, blocos 1 e 2, prompts do Google Flow, Nano Banana) continua 100% PRESERVADO!
+      // =========================================================================
+
+      // Limpa APENAS os campos do formulário de envio de Short para o próximo corte:
+      if (uploadPathInput) uploadPathInput.value = '';
+      const videoFileInput = $('#wf-video-file-input');
+      if (videoFileInput) videoFileInput.value = '';
+      $('#wf-video-selected-box')?.classList.add('hidden');
+      $('#wf-video-drop-content')?.classList.remove('hidden');
+
+      const thumbFileInput = $('#wf-thumb-file-input');
+      const thumbPathInput = $('#wf-upload-thumbnail-path');
+      const thumbImgPreview = $('#wf-thumb-img-preview');
+      const thumbPlaceholder = $('#wf-thumb-placeholder');
+      const removeThumbBtn = $('#wf-remove-thumb-btn');
+      if (thumbFileInput) thumbFileInput.value = '';
+      if (thumbPathInput) thumbPathInput.value = '';
+      if (thumbImgPreview) { thumbImgPreview.src = ''; thumbImgPreview.classList.add('hidden'); }
+      if (thumbPlaceholder) thumbPlaceholder.classList.remove('hidden');
+      removeThumbBtn?.classList.add('hidden');
+      if ($('#wf-thumb-status-msg')) $('#wf-thumb-status-msg').textContent = '';
+
+      // Limpeza completa e imediata dos dados do Short postado:
+      if (titleInput) { titleInput.value = ''; updateTitleCharCounter(); }
+      if (descInput) { descInput.value = ''; updateDescCharCounter(); }
+      const tagsInp = $('#wf-upload-tags');
+      if (tagsInp) tagsInp.value = '';
+
+      const timeInp = $('#wf-upload-time');
+      if (timeInp) timeInp.value = '';
+
+      // Oculta a caixa de metadados aberta e volta a exibir o hero de colagem limpo
+      collapseMetadataFields();
+      resetPasteModal();
+
+      showToast('✓ Short programado com sucesso! Dados limpos para o próximo envio.', 'success');
+
+      // Se o tema ativo no estúdio era um tema de Short específico que acabou de ser postado, desassocia apenas esse Short
+      if (matchedShortThemeId && wfState.currentThemeId === matchedShortThemeId) {
+        wfState.currentThemeId = null;
+        wfState.currentTheme = null;
+        try {
+          localStorage.removeItem('wf_last_active_theme_id');
+          localStorage.removeItem(`wf_draft_theme_${matchedShortThemeId}`);
+        } catch (_) {}
+      }
+    } else {
+      // =========================================================================
+      // Foi postado o VÍDEO LONGO oficial:
+      // Agora sim limpa o rascunho do estúdio pois a produção completa foi finalizada.
+      // =========================================================================
+      clearWorkflowDraft(false);
+      try {
+        localStorage.removeItem('wf_last_active_theme_id');
+        localStorage.removeItem(WF_DRAFT_STORAGE_KEY);
+        if (wfState.currentThemeId) {
+          localStorage.removeItem(`wf_draft_theme_${wfState.currentThemeId}`);
+        }
+      } catch (_) {}
+
+      resetWorkflowStudio({ keepFieldA: true, preserveTopic: '', preserveLog: true, notify: false });
+
+      if (uploadPathInput) uploadPathInput.value = '';
+      const videoFileInput = $('#wf-video-file-input');
+      if (videoFileInput) videoFileInput.value = '';
+      $('#wf-video-selected-box')?.classList.add('hidden');
+      $('#wf-video-drop-content')?.classList.remove('hidden');
+
+      const thumbFileInput = $('#wf-thumb-file-input');
+      const thumbPathInput = $('#wf-upload-thumbnail-path');
+      const thumbImgPreview = $('#wf-thumb-img-preview');
+      const thumbPlaceholder = $('#wf-thumb-placeholder');
+      const removeThumbBtn = $('#wf-remove-thumb-btn');
+      if (thumbFileInput) thumbFileInput.value = '';
+      if (thumbPathInput) thumbPathInput.value = '';
+      if (thumbImgPreview) { thumbImgPreview.src = ''; thumbImgPreview.classList.add('hidden'); }
+      if (thumbPlaceholder) thumbPlaceholder.classList.remove('hidden');
+      removeThumbBtn?.classList.add('hidden');
+      if ($('#wf-thumb-status-msg')) $('#wf-thumb-status-msg').textContent = '';
+
+      if (titleInput) { titleInput.value = ''; updateTitleCharCounter(); }
+      if (descInput) { descInput.value = ''; updateDescCharCounter(); }
+      const tagsInp = $('#wf-upload-tags');
+      if (tagsInp) tagsInp.value = '';
+
+      const timeInp = $('#wf-upload-time');
+      if (timeInp) {
+        const tomorrow18 = new Date();
+        tomorrow18.setDate(tomorrow18.getDate() + 1);
+        tomorrow18.setHours(18, 0, 0, 0);
+        timeInp.value = typeof formatLocalDateToIsoMinute === 'function' ? formatLocalDateToIsoMinute(tomorrow18) : '';
+      }
+
+      collapseMetadataFields();
+      resetPasteModal();
+    }
+
+    renderWorkflowActiveThemeCard();
+    if (typeof renderActiveProductionsBar === 'function') {
+      renderActiveProductionsBar();
+    }
 
     // Restaura o botão de agendamento imediatamente para estar pronto para a próxima produção
     submitBtn.disabled = false;
@@ -7873,6 +9023,16 @@ if (typeof restoreWorkflowDraft === 'function') {
 const rawHash = location.hash.slice(1);
 const initialView = rawHash === 'readiness' ? 'workflow' : rawHash;
 if (['overview', 'workflow', 'operator', 'pipeline', 'calendar', 'analytics', 'engagement', 'settings'].includes(initialView)) switchView(initialView);
+
+window.addEventListener('hashchange', () => {
+  const hash = location.hash.replace(/^#/, '');
+  const target = hash === 'readiness' ? 'workflow' : hash;
+  if (['overview', 'workflow', 'operator', 'pipeline', 'calendar', 'analytics', 'engagement', 'settings'].includes(target)) {
+    if (ui.currentView !== target) {
+      switchView(target);
+    }
+  }
+});
 refreshDashboard().then(() => syncWorkflowChannel());
 setInterval(() => {
   refreshDashboard(true);
@@ -7884,6 +9044,13 @@ setInterval(() => {
 // Gerenciamento do Modo "Envio de Cortes" e Formato
 // ====================================================
 function setWorkflowStudioMode(mode = 'full', scrollToStep8 = false) {
+  // Se está alternando do modo Estúdio Completo para Envio de Cortes e há um vídeo longo em edição, salva imediatamente seu rascunho
+  if (wfStudioMode === 'full' && mode === 'cortes' && (wfState.currentThemeId || wfState.script)) {
+    try {
+      saveWorkflowDraft(false);
+    } catch (_) {}
+  }
+
   wfStudioMode = mode;
   const workflowView = $('#workflow-view');
   const btnFull = $('#wf-mode-tab-full');
@@ -7906,6 +9073,20 @@ function setWorkflowStudioMode(mode = 'full', scrollToStep8 = false) {
       indicator.innerHTML = 'Visualizando: <strong>Estúdio Completo</strong> (Planejamento, Roteiro, Narração, Imagens e Postagem)';
     }
     setWorkflowUploadFormat('explainer');
+
+    // Restaura metadados do vídeo longo oficial ativo se os campos estiverem vazios
+    const currentTheme = wfState.currentTheme || (Array.isArray(wfPlannedThemes) ? wfPlannedThemes.find(t => t.id === wfState.currentThemeId) : null);
+    const tInp = $('#wf-upload-title');
+    const timeInp = $('#wf-upload-time');
+    if (currentTheme) {
+      if (tInp && !tInp.value) {
+        tInp.value = currentTheme.topic || '';
+        if (typeof updateTitleCharCounter === 'function') updateTitleCharCounter();
+      }
+      if (timeInp && !timeInp.value && currentTheme.scheduled_date && currentTheme.scheduled_time) {
+        timeInp.value = `${currentTheme.scheduled_date}T${currentTheme.scheduled_time}`;
+      }
+    }
   }
 
   if (scrollToStep8) {
@@ -8055,6 +9236,16 @@ $('#wf-repaste-metadata-btn')?.addEventListener('click', () => {
   hideScheduleStatusBanner();
   pasteDialog?.showModal();
   pasteRawTextarea?.focus();
+});
+
+$('#wf-clear-metadata-fields-btn')?.addEventListener('click', () => {
+  if (titleInput) { titleInput.value = ''; updateTitleCharCounter(); }
+  if (descInput) { descInput.value = ''; updateDescCharCounter(); }
+  const tagsInp = $('#wf-upload-tags');
+  if (tagsInp) tagsInp.value = '';
+  collapseMetadataFields();
+  resetPasteModal();
+  showToast('Campos de metadados limpos com sucesso!', 'info');
 });
 
 $('#wf-collapse-metadata-btn')?.addEventListener('click', () => {

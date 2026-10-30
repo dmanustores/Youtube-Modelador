@@ -1561,6 +1561,56 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
       }
     });
 
+    this.app.get('/api/youtube/test-connection', async (_req, res) => {
+      try {
+        const { google } = require('googleapis');
+        await this.credentials.reload();
+        const auth = this.credentials.getYouTubeAuth();
+        if (!auth) {
+          return res.json({
+            success: false,
+            valid: false,
+            error: 'Nenhuma credencial ou token do YouTube configurado.'
+          });
+        }
+        const youtube = google.youtube({ version: 'v3', auth });
+        const response = await youtube.channels.list({
+          part: 'snippet,contentDetails',
+          mine: true
+        });
+        const channel = response.data?.items?.[0];
+        if (!channel) {
+          return res.json({
+            success: false,
+            valid: false,
+            error: 'Nenhum canal associado a esta conta do YouTube.'
+          });
+        }
+        return res.json({
+          success: true,
+          valid: true,
+          channel: {
+            id: channel.id,
+            title: channel.snippet?.title,
+            description: channel.snippet?.description,
+            customUrl: channel.snippet?.customUrl,
+            thumbnails: channel.snippet?.thumbnails
+          }
+        });
+      } catch (error) {
+        const isInvalidGrant = error.message?.includes('invalid_grant') || error.response?.data?.error === 'invalid_grant';
+        return res.json({
+          success: false,
+          valid: false,
+          error: error.message,
+          isInvalidGrant,
+          description: isInvalidGrant 
+            ? 'O token de autenticação OAuth expirou ou foi revogado pelo Google. É necessário fazer login novamente.'
+            : (error.response?.data?.error_description || error.message)
+        });
+      }
+    });
+
     this.app.post('/api/youtube/switch', protect, async (req, res) => {
       try {
         const channelId = String(req.body?.channelId || '').trim();
@@ -1816,6 +1866,60 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
         const channelId = req.query.channelId || activeAccount?.channelId || null;
         const status = req.query.status || null;
         const format = req.query.format || null;
+
+        // Auto-sincronização com o publish_schedule para garantir que nenhum vídeo agendado/postado falte
+        try {
+          const scheduledEntries = await this.db.getAllRows(
+            "SELECT id, title, publish_time, youtube_url, status FROM publish_schedule WHERE status IN ('scheduled', 'published') ORDER BY publish_time DESC"
+          );
+          if (Array.isArray(scheduledEntries) && scheduledEntries.length > 0) {
+            const currentThemes = await this.db.listPlannedThemes({ channelId });
+            for (const item of scheduledEntries) {
+              const cleanItemTitle = (item.title || '').replace(/^["']|["']$/g, '').trim().toLowerCase();
+              if (!cleanItemTitle) continue;
+              const alreadyExists = currentThemes.some(t => {
+                const tTopic = (t.topic || '').trim().toLowerCase();
+                const sameUrl = item.youtube_url && (t.published_url === item.youtube_url || t.publishedUrl === item.youtube_url);
+                const sameTitle = tTopic === cleanItemTitle || cleanItemTitle.includes(tTopic) || tTopic.includes(cleanItemTitle);
+                return sameUrl || sameTitle;
+              });
+
+              if (!alreadyExists) {
+                let targetDate = null;
+                let targetTime = null;
+                if (item.publish_time) {
+                  try {
+                    const d = new Date(item.publish_time);
+                    if (!isNaN(d.getTime())) {
+                      const fDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit' });
+                      const fTime = new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit', hour12: false });
+                      targetDate = fDate.format(d);
+                      targetTime = fTime.format(d);
+                    } else {
+                      targetDate = String(item.publish_time).split('T')[0].split(' ')[0];
+                    }
+                  } catch (_e) {
+                    targetDate = String(item.publish_time).split('T')[0].split(' ')[0];
+                  }
+                }
+                const isShort = /#shorts?/i.test(item.title);
+                await this.db.createPlannedTheme({
+                  channelId,
+                  topic: item.title,
+                  format: isShort ? 'short' : 'explainer',
+                  status: 'posted',
+                  scheduledDate: targetDate,
+                  scheduledTime: targetTime,
+                  publishedUrl: item.youtube_url || null,
+                  whyBetter: isShort ? '⚡ Envio Direto de Cortes / Short' : 'Upload Agendado no YouTube'
+                });
+              }
+            }
+          }
+        } catch (syncErr) {
+          console.warn('Aviso: Falha ao sincronizar publish_schedule com workflow_planned_themes:', syncErr.message);
+        }
+
         const themes = await this.db.listPlannedThemes({ channelId, status, format });
         
         const all = await this.db.listPlannedThemes({ channelId });
@@ -1833,6 +1937,16 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
         };
 
         return res.json({ success: true, themes, counts });
+      } catch (error) {
+        return res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+    this.app.get('/api/workflow/planned-themes/:id', async (req, res) => {
+      try {
+        const theme = await this.db.getPlannedTheme(req.params.id);
+        if (!theme) return res.status(404).json({ success: false, error: 'Tema não encontrado' });
+        return res.json({ success: true, theme });
       } catch (error) {
         return res.status(500).json({ success: false, error: error.message });
       }
@@ -1974,6 +2088,32 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
       }
     });
 
+    this.app.post('/api/workflow/validate-duplication', async (req, res) => {
+      try {
+        const { checkContentDuplication } = require('./utils/duplicate-detector');
+        const { title, topic, publishTime, format, excludeId } = req.body || {};
+        const activeAccount = this.youtubeAccounts?.getActiveAccount();
+        const channelId = activeAccount?.channelId || null;
+
+        const allThemes = await this.db.listPlannedThemes({ channelId });
+        const validation = checkContentDuplication({
+          newTitle: title,
+          newTopic: topic,
+          newPublishTime: publishTime,
+          newFormat: format || 'explainer',
+          existingItems: allThemes,
+          excludeId
+        });
+
+        return res.json({
+          success: true,
+          ...validation
+        });
+      } catch (error) {
+        return res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
 
     this.app.post('/api/workflow/generate-themes', protect, async (req, res) => {
       try {
@@ -2086,17 +2226,48 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
       }
     });
 
+    this.app.get('/api/workflow/audit-channel-thumbnails', async (req, res) => {
+      try {
+        if (!this.workflow) return res.status(503).json({ success: false, error: 'Workflow service not ready' });
+        const count = parseInt(req.query.count || '5', 10);
+        const channelId = req.query.channelId || null;
+        const audit = await this.workflow.auditRecentChannelThumbnails({ count, channelId });
+        return res.json({ success: true, audit });
+      } catch (error) {
+        return res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
     this.app.post('/api/workflow/generate-nano-banana-prompts', protect, async (req, res) => {
       try {
         if (!this.workflow) return res.status(503).json({ success: false, error: 'Workflow service not ready' });
-        const { topic, script, language, versionsCount } = req.body || {};
+        const { topic, script, language, versionsCount, fieldAHistory, channelId } = req.body || {};
+
+        let effectiveHistory = fieldAHistory || '';
+        if (!effectiveHistory && this.db) {
+          const raw = await this.db.getSetting('last_workflow_summary').catch(() => null);
+          if (raw) {
+            try {
+              const parsed = JSON.parse(raw);
+              effectiveHistory = parsed.summaryText || raw;
+            } catch (_e) {
+              effectiveHistory = raw;
+            }
+          }
+        }
+
         const result = await this.workflow.generateNanoBananaThumbnailPrompts({
           topic,
           script,
           language,
+          fieldAHistory: effectiveHistory,
+          channelId: channelId || null,
           versionsCount: parseInt(versionsCount || '10', 10)
         });
-        return res.json({ success: true, versions: result });
+
+        const versions = Array.isArray(result) ? result : (result?.versions || []);
+        const audit = result?.audit || null;
+        return res.json({ success: true, versions, audit });
       } catch (error) {
         return res.status(500).json({ success: false, error: error.message });
       }
@@ -2178,6 +2349,21 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
       }
     });
 
+    this.app.get('/api/clipboard/read', async (_req, res) => {
+      try {
+        const { exec } = require('child_process');
+        exec('powershell -NoProfile -Command "Get-Clipboard"', { timeout: 3500, maxBuffer: 2 * 1024 * 1024 }, (error, stdout) => {
+          if (error) {
+            return res.json({ success: false, text: '', error: error.message });
+          }
+          const text = (stdout || '').replace(/\r\n/g, '\n').trim();
+          return res.json({ success: true, text });
+        });
+      } catch (err) {
+        return res.json({ success: false, text: '', error: err.message });
+      }
+    });
+
     this.app.post('/api/workflow/schedule-upload', protect, async (req, res) => {
       try {
         if (!this.workflow) return res.status(503).json({ success: false, error: 'Workflow service not ready' });
@@ -2198,8 +2384,64 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
           seo,
           bundle,
           format,
-          themeId
+          themeId,
+          forceDuplicate
         } = req.body || {};
+
+        // 🔒 BLINDAGEM ANTI-REPETIÇÃO E ANTI-DUPLICIDADE
+        const { checkContentDuplication } = require('./utils/duplicate-detector');
+        const activeAccount = this.youtubeAccounts?.getActiveAccount();
+        const allExisting = await this.db.listPlannedThemes({ channelId: activeAccount?.channelId || null });
+
+        let effectiveThemeId = themeId;
+        const cleanTitle = (title || '').replace(/^["']|["']$/g, '').trim();
+        const isShortUpload = format === 'short' || /#shorts?/i.test(cleanTitle) || /#shorts?/i.test(description || '');
+
+        if (!effectiveThemeId && allExisting && allExisting.length > 0) {
+          const datePart = publishTime ? String(publishTime).split('T')[0] : null;
+          const timePart = publishTime && String(publishTime).includes('T') ? String(publishTime).split('T')[1].slice(0, 5) : null;
+          const matched = allExisting.find(t => {
+            const isThemeShort = t.format === 'short' || /#shorts?/i.test(t.topic || '');
+            // Blindagem: Shorts nunca associam a temas de vídeos longos e vice-versa
+            if (isShortUpload !== isThemeShort) return false;
+
+            const titleMatch = t.topic && cleanTitle && (
+              t.topic.toLowerCase() === cleanTitle.toLowerCase() ||
+              cleanTitle.toLowerCase().includes(t.topic.toLowerCase()) ||
+              t.topic.toLowerCase().includes(cleanTitle.toLowerCase())
+            );
+            if (titleMatch) return true;
+
+            const timeMatch = timePart && t.scheduled_time && t.scheduled_time.startsWith(timePart);
+            if (t.status === 'in_production' && datePart && t.scheduled_date === datePart && timeMatch) {
+              return true;
+            }
+            return false;
+          });
+          if (matched) {
+            effectiveThemeId = matched.id;
+            themeId = matched.id;
+          }
+        }
+
+        const dupeCheck = checkContentDuplication({
+          newTitle: title,
+          newPublishTime: publishTime,
+          newFormat: format || 'explainer',
+          existingItems: allExisting,
+          excludeId: effectiveThemeId
+        });
+
+        if (dupeCheck.hasBlockingIssue && !forceDuplicate) {
+          const firstBlocker = dupeCheck.issues.find(i => i.severity === 'block');
+          return res.status(409).json({
+            success: false,
+            duplicateBlocked: true,
+            error: firstBlocker?.message || 'Bloqueio Anti-Duplicidade ativado.',
+            issues: dupeCheck.issues,
+            matches: dupeCheck.matches
+          });
+        }
 
         const result = await this.workflow.scheduleManualUpload({
           videoPath,
@@ -2221,7 +2463,12 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
           format: format || 'explainer'
         });
 
-        // Registrar / Atualizar tema no cronograma como 'posted' e com o formato correto
+        // CRÍTICO: Validação real de envio para o YouTube oficial
+        // O status 'posted' e a marcação de publicado SÓ podem ser atribuídos se o YouTube API confirmar uploadDirectly e retornar URL oficial!
+        const isReallyPosted = Boolean(result?.uploadedDirectly && result?.scheduleEntry?.youtubeUrl);
+        const youtubeUrl = isReallyPosted ? result.scheduleEntry.youtubeUrl : null;
+        const uploadError = isReallyPosted ? null : (result?.uploadNotice || 'O vídeo não pôde ser enviado para a API do YouTube (salvo apenas na fila local).');
+
         let syncedTheme = null;
         try {
           if (this.db) {
@@ -2234,44 +2481,58 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
             const targetTime = publishTime && String(publishTime).includes('T')
               ? String(publishTime).split('T')[1].slice(0, 5)
               : (publishTime && String(publishTime).includes(' ') ? String(publishTime).split(' ')[1].slice(0, 5) : null);
-            const youtubeUrl = result?.scheduleEntry?.youtubeUrl || null;
+
+            const themeDataPayload = {
+              format: targetFormat,
+              publishedUrl: youtubeUrl,
+              scheduledDate: targetDate,
+              scheduledTime: targetTime,
+              googleFlowPrompts: googleFlowPrompts || bundle?.googleFlowPrompts || null,
+              nanoBananaPrompts: nanoBananaPrompts || bundle?.nanoBananaPrompts || null,
+              seoData: seo || bundle?.seo || { title, description, tags },
+              videoPath: videoPath || null,
+              thumbnailPath: thumbnailPath || null,
+              productionData: {
+                logFilePath: result?.logFilePath || null,
+                logFileName: result?.logFileName || null,
+                logRelativePath: result?.logRelativePath || null,
+                scheduleId: result?.scheduleEntry?.id || null,
+                savedAt: new Date().toISOString()
+              },
+              uploadError: uploadError
+            };
+
+            // Se realmente postou no YouTube, vira 'posted'. Se NÃO postou, permanece 'in_production' para permitir refazer a tentativa!
+            if (isReallyPosted) {
+              themeDataPayload.status = 'posted';
+            } else {
+              themeDataPayload.status = 'in_production';
+            }
 
             if (themeId) {
-              syncedTheme = await this.db.updatePlannedTheme(themeId, {
-                status: 'posted',
-                format: targetFormat,
-                publishedUrl: youtubeUrl,
-                scheduledDate: targetDate,
-                scheduledTime: targetTime
-              });
+              syncedTheme = await this.db.updatePlannedTheme(themeId, themeDataPayload);
             } else {
-              // Verificar se existe um tema existente com título correspondente
+              // Verificar se existe um tema existente com formato e título correspondentes
               const allThemes = await this.db.listPlannedThemes({ channelId });
-              const match = allThemes.find(t => 
-                t.topic && cleanTitle && (
+              const match = allThemes.find(t => {
+                const isThemeShort = t.format === 'short' || /#shorts?/i.test(t.topic || '');
+                if (isShort !== isThemeShort) return false;
+                return t.topic && cleanTitle && (
                   t.topic.toLowerCase().includes(cleanTitle.toLowerCase()) ||
                   cleanTitle.toLowerCase().includes(t.topic.toLowerCase())
-                )
-              );
+                );
+              });
               if (match) {
                 syncedTheme = await this.db.updatePlannedTheme(match.id, {
-                  status: 'posted',
-                  format: targetFormat,
-                  publishedUrl: youtubeUrl,
+                  ...themeDataPayload,
                   scheduledDate: targetDate || match.scheduled_date,
                   scheduledTime: targetTime || match.scheduled_time
                 });
               } else {
-                // Se foi envio direto de corte ou upload sem tema prévio, criar entrada no cronograma
-                // para incrementar a contagem de postados e exibir no filtro/calendário
                 syncedTheme = await this.db.createPlannedTheme({
                   channelId,
                   topic: cleanTitle || (isShort ? 'Short Agendado' : 'Vídeo Agendado'),
-                  format: targetFormat,
-                  status: 'posted',
-                  scheduledDate: targetDate,
-                  scheduledTime: targetTime,
-                  publishedUrl: youtubeUrl,
+                  ...themeDataPayload,
                   whyBetter: isShort ? '⚡ Envio Direto de Cortes / Short' : 'Upload Direto no Estúdio'
                 });
               }
@@ -2281,7 +2542,14 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
           console.warn('Aviso: Não foi possível sincronizar status do tema no cronograma:', dbErr.message);
         }
 
-        return res.json({ success: true, result, theme: syncedTheme });
+        return res.json({
+          success: true,
+          uploadedDirectly: isReallyPosted,
+          youtubeUrl,
+          uploadNotice: isReallyPosted ? null : uploadError,
+          result,
+          theme: syncedTheme
+        });
       } catch (error) {
         return res.status(400).json({ success: false, error: error.message });
       }
