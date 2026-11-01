@@ -228,13 +228,20 @@ class PublishingSchedulingAgent {
     // Resolve the file before marking the network upload as attempted.
     const videoStream = await this.getVideoStream(metadata.video.path);
     scheduleEntry.uploadAttempted = true;
-    const videoUpload = await this.youtube.videos.insert({
-      part: 'snippet,status',
-      requestBody: videoMetadata,
-      media: {
-        body: videoStream
+    const videoUpload = await this.youtube.videos.insert(
+      {
+        part: 'snippet,status',
+        requestBody: videoMetadata,
+        media: {
+          body: videoStream
+        }
+      },
+      {
+        timeout: 7200000, // 2 horas de timeout para uploads pesados (> 1GB)
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity
       }
-    });
+    );
     
     const videoId = videoUpload.data.id;
     this.logger.info(`Video uploaded with ID: ${videoId}`);
@@ -324,8 +331,23 @@ class PublishingSchedulingAgent {
   }
   async uploadThumbnail(videoId, thumbnailPath) {
     try {
-      const thumbnailBuffer = await fs.readFile(thumbnailPath);
+      let thumbnailBuffer = await fs.readFile(thumbnailPath);
       
+      // O YouTube Data API v3 rejeita com HTTP 400 imagens acima de 2.097.152 bytes (2 MB).
+      // Se a imagem tiver mais de 1.8 MB, otimizamos com sharp para JPEG de alta qualidade.
+      if (thumbnailBuffer.length >= 1850000) {
+        try {
+          const sharp = require('sharp');
+          this.logger.info(`Miniatura de ${(thumbnailBuffer.length / (1024 * 1024)).toFixed(2)} MB excede o limite seguro do YouTube. Otimizando via sharp...`);
+          thumbnailBuffer = await sharp(thumbnailBuffer)
+            .jpeg({ quality: 85, progressive: true })
+            .toBuffer();
+          this.logger.success(`Miniatura otimizada para ${(thumbnailBuffer.length / 1024).toFixed(1)} KB`);
+        } catch (sharpErr) {
+          this.logger.warn(`Não foi possível otimizar miniatura com sharp: ${sharpErr.message}`);
+        }
+      }
+
       await this.youtube.thumbnails.set({
         videoId: videoId,
         media: {
@@ -336,6 +358,19 @@ class PublishingSchedulingAgent {
       this.logger.info(`Thumbnail uploaded for video: ${videoId}`);
     } catch (error) {
       this.logger.error(`Failed to upload thumbnail: ${error.message}`);
+    }
+  }
+
+  async deleteVideoFromYouTube(videoId) {
+    if (!videoId) return false;
+    try {
+      this.logger.info(`Tentando remover vídeo anterior/incompleto do YouTube: ${videoId}...`);
+      await this.youtube.videos.delete({ id: videoId });
+      this.logger.success(`Vídeo ${videoId} removido com sucesso do YouTube`);
+      return true;
+    } catch (err) {
+      this.logger.warn(`Não foi possível remover vídeo ${videoId} do YouTube automaticamente: ${err.message}`);
+      return false;
     }
   }
 

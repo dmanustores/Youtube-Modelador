@@ -14,7 +14,7 @@
   const MINI_LABELS = {
     overview: 'Início', calendar: 'Calendário', workflow: 'Modelador',
     engagement: 'Engajamento', analytics: 'Estatísticas', operator: 'Operador',
-    pipeline: 'Pipeline', settings: 'Configurações'
+    settings: 'Configurações'
   };
   function ensureMiniLabels() {
     $$('.nav-item').forEach(item => {
@@ -35,14 +35,13 @@
 
   /* ---------- 1. View choreography ---------- */
   const VIEW_META = {
-    overview: ['VISÃO GERAL DO OPERADOR', 'Saiba o que acontece a seguir.', 'Início'],
-    calendar: ['PLANEJAMENTO EDITORIAL', 'Planeje antes de gerar.', 'Calendário'],
-    workflow: ['YOUTUBE · MODELADOR', 'Youtube - Modelador', 'Modelador'],
-    engagement: ['ENGAJAMENTO DO PÚBLICO', 'Comentários e respostas.', 'Engajamento'],
-    analytics: ['DESEMPENHO', 'Transforme resultados nos próximos passos.', 'Estatísticas'],
-    operator: ['OPERADOR AUTÔNOMO', 'Defina a estratégia para o Lumen.', 'Operador'],
-    pipeline: ['OPERAÇÕES DE CONTEÚDO', 'Da ideia à publicação.', 'Pipeline'],
-    settings: ['DIRETRIZES DO CANAL', 'Faça todo agente soar como você.', 'Configurações']
+    overview: ['VISÃO GERAL DO OPERADOR', 'Cockpit executivo e métricas do canal.', 'Início'],
+    workflow: ['ESTÚDIO DE PRODUÇÃO', 'Roteiro 10k, narração, prompts e agendamento.', 'Modelador'],
+    calendar: ['GRADE EDITORIAL & YOUTUBE', 'Lançamentos programados no canal e temas.', 'Calendário'],
+    operator: ['DIRETRIZES & DNA DO CANAL', 'Tom de voz, regras bíblicas e estratégia.', 'Operador'],
+    engagement: ['ENGAJAMENTO DO PÚBLICO', 'Comentários e respostas com IA.', 'Engajamento'],
+    analytics: ['DESEMPENHO & RETENÇÃO', 'Transforme resultados nos próximos passos.', 'Estatísticas'],
+    settings: ['CONFIGURAÇÕES & INTEGRAÇÕES', 'Chaves de API, credenciais e conexões.', 'Configurações']
   };
   let currentView = 'overview';
   const baseSwitchView = window.switchView;
@@ -131,11 +130,11 @@
     <div class="cmdk" role="dialog" aria-modal="true" aria-label="Paleta de comandos">
       <div class="cmdk-head">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-        <input class="cmdk-input" type="text" placeholder="Ir para uma tela, executar um comando…" aria-label="Comando" autocomplete="off" spellcheck="false">
+        <input class="cmdk-input" type="text" placeholder="Buscar comando, tela ou ação… (ex: cortes, 10k, temas, youtube)" aria-label="Comando" autocomplete="off" spellcheck="false">
         <kbd>esc</kbd>
       </div>
       <div class="cmdk-list" role="listbox" aria-label="Comandos"></div>
-      <div class="cmdk-foot"><span><kbd>↑</kbd><kbd>↓</kbd> navegar</span><span><kbd>↵</kbd> executar</span><span class="cmdk-brand">Console Lumen</span></div>
+      <div class="cmdk-foot"><span><kbd>↑</kbd><kbd>↓</kbd> navegar</span><span><kbd>↵</kbd> executar</span><span class="cmdk-brand">YouTube Automation Studio</span></div>
     </div>`;
   document.body.appendChild(palette);
   const listEl = palette.querySelector('.cmdk-list');
@@ -144,21 +143,92 @@
   function buildCommands() {
     const cmds = Object.entries(VIEW_META).map(([id, meta]) => ({
       group: 'Navegação', icon: 'view', label: meta[2],
-      hint: meta[1], keywords: id, run: () => window.switchView(id)
+      hint: meta[1], keywords: `${id} ${meta[2]} ${meta[0]} ir para tela`, run: () => window.switchView(id)
     }));
-    const action = (label, hint, selector, keywords) => ({
-      group: 'Ações', icon: 'action', label, hint, keywords,
-      run: () => { const el = $(selector); if (el) el.click(); }
+
+    const action = (group, label, hint, keywords, fn, iconKind = 'action') => ({
+      group, icon: iconKind, label, hint, keywords, run: fn
     });
+
+    const clickSelector = (selector, viewTarget = null) => {
+      if (viewTarget && typeof window.switchView === 'function') {
+        window.switchView(viewTarget);
+      }
+      setTimeout(() => {
+        const el = $(selector);
+        if (el) el.click();
+      }, viewTarget ? 100 : 0);
+    };
+
+    // --- Produção & Modelador ---
     cmds.push(
-      action('Estúdio de Produção', 'Abrir estúdio de roteiro, blocos de narração, prompts e upload', '#generate-button', 'producao estúdio roteiro narracao workflow'),
-      action('Adicionar ideia ao banco', 'Salvar um tema para depois', '#add-idea-button', 'ideia backlog tema topic'),
-      ui.state?.system?.automationPaused
-        ? action('Retomar automação', 'Despausar o agendador', '#automation-toggle', 'retomar unpause automacao play')
-        : action('Pausar automação', 'Pausar a geração agendada', '#automation-toggle', 'pausar automacao stop pause'),
-      action('Atualizar dados do painel', 'Recarregar dados agora', '#refresh-button', 'atualizar refresh reload sync dados'),
-      action('Definir chave de API', 'Salvar chave de acesso neste navegador', '#api-key-button', 'api key autenticacao credentials')
+      action('Produção & Modelador', '⚡ Envio Rápido de Cortes / Shorts', 'Postagem ágil de vídeos curtos em 9:16', 'corte cortes short shorts vertical video rapido postagem upload envio', () => {
+        clickSelector('#btn-envio-cortes-top', 'workflow');
+      }, 'cortes'),
+      action('Produção & Modelador', '🚀 Retomar Produção Atual', 'Ir direto para a etapa em andamento no Modelador', 'retomar producao rascunho continuar workflow script', () => {
+        clickSelector('#overview-quick-resume-btn', 'workflow');
+      }),
+      action('Produção & Modelador', '🎬 Novo Documentário (10.000 carac.)', 'Limpar estúdio e iniciar novo documentário bíblico', 'novo documentario 10k roteiro producao historia', () => {
+        clickSelector('#overview-quick-new-doc-btn', 'workflow');
+      }),
+      action('Produção & Modelador', '📋 Inserir Roteiro Completo Pronto', 'Colar texto gerado externamente para fatiar em blocos', 'colar roteiro texto direto importar bloco narracao pronto', () => {
+        clickSelector('#wf-toggle-direct-script-btn', 'workflow');
+      }),
+      action('Produção & Modelador', '🎨 Gerar 35 Prompts Google Flow', 'Criar prompts visuais cinematográficos para os blocos', 'google flow prompts imagens visual gerador prompts', () => {
+        clickSelector('#wf-generate-google-flow-btn', 'workflow');
+      }),
+      action('Produção & Modelador', '🖼️ Gerar 3 Versões de Capa (Nano Banana)', 'Criar variações de miniaturas com IA', 'capa thumbnail nano banana miniatura gerar', () => {
+        clickSelector('#wf-generate-nano-banana-btn', 'workflow');
+      }),
+      action('Produção & Modelador', '🚀 Gerar Metadados SEO (Título e Descrição)', 'Gerar título magnético, descrição e tags para YouTube', 'seo titulo descricao hashtags tags youtube metadados', () => {
+        clickSelector('#wf-generate-seo-btn', 'workflow');
+      })
     );
+
+    // --- Grade & Calendário ---
+    cmds.push(
+      action('Grade & Calendário', '✨ Planejar 7 Novos Temas com IA', 'Criar cronograma com ganchos e referências bíblicas', 'planejar temas ia sugestoes cronograma calendario ideias pauta', () => {
+        clickSelector('#overview-quick-plan-ai-btn', 'workflow');
+      }),
+      action('Grade & Calendário', '＋ Adicionar Tema Manual ao Calendário', 'Inserir novo tema avulso no cronograma', 'adicionar tema manual novo criar calendario pauta', () => {
+        clickSelector('#cal-open-manual-btn', 'calendar');
+      }),
+      action('Grade & Calendário', '🔄 Sincronizar Vídeos do YouTube Studio', 'Atualizar grade com lançamentos agendados e publicados', 'sincronizar canal youtube studio videos agendados grade postados', () => {
+        clickSelector('#cal-sync-yt-btn', 'calendar');
+      }),
+      action('Grade & Calendário', '🧹 Limpar Temas Duplicados', 'Remover temas repetidos do cronograma', 'limpar duplicados deduplicar cronograma temas', () => {
+        clickSelector('#wf-deduplicate-themes-btn', 'workflow');
+      }),
+      action('Grade & Calendário', '📋 Exportar / Copiar Temas do Cronograma', 'Copiar lista de temas planejados para a área de transferência', 'copiar exportar temas cronograma backup', () => {
+        clickSelector('#wf-export-themes-btn', 'workflow');
+      })
+    );
+
+    // --- YouTube & Sistema ---
+    cmds.push(
+      action('YouTube & Sistema', '🔄 Atualizar Dados do Painel', 'Recarregar métricas e status agora', 'atualizar refresh reload sync dados painel', () => {
+        clickSelector('#refresh-button');
+      }),
+      action('YouTube & Sistema', '🔍 Testar Conexão com YouTube', 'Verificar se o canal está ativo e autorizado', 'testar conexao youtube oauth token api status', () => {
+        clickSelector('#yt-test-connection-btn', 'settings');
+      }),
+      action('YouTube & Sistema', '👤 Trocar Conta / Canal do YouTube', 'Alternar entre perfis e canais conectados', 'trocar conta canal youtube switch account alternar', () => {
+        clickSelector('#yt-switch-account-btn', 'settings');
+      }),
+      action('YouTube & Sistema', '💬 Sincronizar Comentários do YouTube', 'Baixar novos comentários da audiência', 'comentarios engajamento sincronizar sync audiencia respostas', () => {
+        clickSelector('#engagement-sync-button', 'engagement');
+      }),
+      action('YouTube & Sistema', '🤖 Gerar Rascunhos de Resposta com IA', 'Criar sugestões de resposta para os comentários', 'respostas rascunhos comentarios ia engajamento draft', () => {
+        clickSelector('#engagement-draft-button', 'engagement');
+      }),
+      ui.state?.system?.automationPaused
+        ? action('YouTube & Sistema', '▶️ Retomar Automação', 'Despausar o agendador e gerador automático', 'retomar unpause automacao play ligar', () => clickSelector('#automation-toggle'))
+        : action('YouTube & Sistema', '⏸️ Pausar Automação', 'Pausar a geração agendada do sistema', 'pausar automacao stop pause desligar', () => clickSelector('#automation-toggle')),
+      action('YouTube & Sistema', '🔑 Definir Chave de API do Painel', 'Salvar chave de acesso neste navegador', 'api key autenticacao credentials token', () => {
+        clickSelector('#api-key-button', 'settings');
+      })
+    );
+
     return cmds;
   }
 
@@ -166,9 +236,13 @@
   let selected = 0;
 
   function icon(kind) {
-    return kind === 'view'
-      ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>'
-      : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.5 13.5H11l-1 8.5 9-12h-6.5z"/></svg>';
+    if (kind === 'view') {
+      return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>';
+    }
+    if (kind === 'cortes') {
+      return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>';
+    }
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.5 13.5H11l-1 8.5 9-12h-6.5z"/></svg>';
   }
 
   function renderList() {
@@ -242,7 +316,7 @@
       window.switchView('workflow');
       return;
     }
-    // g-chords: g o → overview, g p → pipeline …
+    // g-chords: g o → overview, g w/m → workflow, g c → calendar, g e → engagement, g a → analytics, g d → operator, g s → settings, g k/x → cortes
     if (event.key.toLowerCase() === 'g') {
       chordArmed = true;
       clearTimeout(chordTimer);
@@ -250,10 +324,30 @@
       return;
     }
     if (chordArmed) {
-      const map = { o: 'overview', p: 'pipeline', c: 'calendar', a: 'analytics', r: 'readiness', s: 'settings', d: 'operator' };
-      const view = map[event.key.toLowerCase()];
+      const key = event.key.toLowerCase();
       chordArmed = false;
       clearTimeout(chordTimer);
+
+      if (key === 'k' || key === 'x') {
+        event.preventDefault();
+        window.switchView('workflow');
+        if (typeof window.setWorkflowStudioMode === 'function') {
+          window.setWorkflowStudioMode('cortes', true);
+        }
+        return;
+      }
+
+      const map = {
+        o: 'overview',
+        w: 'workflow',
+        m: 'workflow',
+        c: 'calendar',
+        e: 'engagement',
+        a: 'analytics',
+        d: 'operator',
+        s: 'settings'
+      };
+      const view = map[key];
       if (view) { event.preventDefault(); window.switchView(view); }
     }
   });

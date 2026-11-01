@@ -1792,8 +1792,26 @@ class Database {
 
   // Publishing methods
   async saveScheduleEntry(entry) {
-    const existing = await this.getLatestScheduleEntry(entry.productionId);
-    if (existing) return existing;
+    let existing = await this.getLatestScheduleEntry(entry.productionId);
+
+    // Se não encontrou por productionId, verificar por título normalizado para evitar duplicidade de títulos
+    if (!existing && entry.title) {
+      const cleanTitle = (entry.title || '').trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ');
+      const allScheduled = await this.getAllRows(
+        `SELECT * FROM publish_schedule ORDER BY (CASE WHEN youtube_url IS NOT NULL THEN 1 ELSE 0 END) DESC, id DESC`
+      );
+      existing = allScheduled.find(s => {
+        const sNorm = (s.title || '').trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ');
+        return sNorm && sNorm === cleanTitle;
+      }) || null;
+    }
+
+    if (existing) {
+      entry.id = existing.id;
+      await this.updateScheduleEntry(entry);
+      return entry;
+    }
+
     const id = this.generateId('schedule');
     entry.id = id;
     
@@ -1944,10 +1962,23 @@ class Database {
     const rows = await this.getAllRows(
       `SELECT * FROM publish_schedule 
        WHERE status = 'scheduled'
-       ORDER BY publish_time ASC`
+       ORDER BY (CASE WHEN youtube_url IS NOT NULL THEN 1 ELSE 0 END) DESC, created_at DESC, publish_time ASC`
     );
+
+    // Deduplicação defensiva estrita por título para que nunca haja títulos repetidos na agenda
+    const seenTitles = new Map();
+    for (const row of rows) {
+      const normTitle = (row.title || '').trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ');
+      if (!normTitle) continue;
+      if (!seenTitles.has(normTitle)) {
+        seenTitles.set(normTitle, row);
+      }
+    }
+
+    const uniqueRows = Array.from(seenTitles.values());
+    uniqueRows.sort((a, b) => new Date(a.publish_time).getTime() - new Date(b.publish_time).getTime());
     
-    return rows.map(row => this.deserializeScheduleEntry(row));
+    return uniqueRows.map(row => this.deserializeScheduleEntry(row));
   }
 
   // Analytics methods
@@ -3214,16 +3245,46 @@ class Database {
     const removedIds = [];
 
     for (const item of all) {
-      const cleanTopic = (item.topic || '').trim().toLowerCase().replace(/\s+/g, ' ');
-      const dateKey = item.scheduled_date || 'nodate';
-      const key = `${cleanTopic}__${dateKey}`;
+      const cleanTopic = (item.topic || '').trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ');
+      if (!cleanTopic) continue;
 
-      if (map.has(key)) {
-        // Já existe um registro original para este mesmo tópico e data: deletar duplicata
+      if (map.has(cleanTopic)) {
+        // Já existe um registro original para este mesmo tópico: deletar duplicata
         await this.executeQuery('DELETE FROM workflow_planned_themes WHERE id = ?', [item.id]);
         removedIds.push(item.id);
       } else {
-        map.set(key, item.id);
+        map.set(cleanTopic, item.id);
+      }
+    }
+
+    return { success: true, count: removedIds.length, removedIds };
+  }
+
+  async deduplicatePublishSchedule() {
+    const rows = await this.getAllRows(
+      `SELECT * FROM publish_schedule 
+       ORDER BY (CASE WHEN youtube_url IS NOT NULL THEN 1 ELSE 0 END) DESC, 
+                (CASE WHEN metadata LIKE '%fromYouTube%' THEN 1 ELSE 0 END) DESC, 
+                created_at DESC`
+    );
+
+    const map = new Map();
+    const removedIds = [];
+
+    for (const item of rows) {
+      const cleanTitle = (item.title || '')
+        .replace(/^["']|["']$/g, '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}]+/gu, ' ');
+      if (!cleanTitle) continue;
+
+      if (map.has(cleanTitle)) {
+        // Já existe um registro prioritário com este mesmo título: deletar duplicata
+        await this.executeQuery('DELETE FROM publish_schedule WHERE id = ?', [item.id]);
+        removedIds.push(item.id);
+      } else {
+        map.set(cleanTitle, item.id);
       }
     }
 

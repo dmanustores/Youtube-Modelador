@@ -687,7 +687,7 @@ class ProductionWorkflowService {
       for (let i = 0; i < allVideoIds.length; i += 50) {
         const batchIds = allVideoIds.slice(i, i + 50);
         const videosRes = await youtube.videos.list({
-          part: 'snippet,status,contentDetails',
+          part: 'snippet,status,contentDetails,processingDetails',
           id: batchIds.join(',')
         });
         detailedVideos.push(...(videosRes?.data?.items || []));
@@ -698,6 +698,8 @@ class ProductionWorkflowService {
       for (const v of detailedVideos) {
         const publishAt = v.status?.publishAt;
         const privacyStatus = v.status?.privacyStatus;
+        const uploadStatus = v.status?.uploadStatus || 'unknown';
+        const processingStatus = v.processingDetails?.processingStatus || (uploadStatus === 'processed' ? 'succeeded' : 'unknown');
         const title = v.snippet?.title || 'Vídeo sem título';
         const isScheduled = Boolean(publishAt);
         const youtubeId = v.id;
@@ -722,26 +724,45 @@ class ProductionWorkflowService {
           fromYouTube: true,
           isShort,
           privacyStatus,
+          uploadStatus,
+          processingStatus,
           thumbnail: v.snippet?.thumbnails?.medium?.url || v.snippet?.thumbnails?.default?.url || null,
           description: v.snippet?.description || '',
           tags: v.snippet?.tags || [],
           duration
         };
 
-        const existing = await this.db.getRow(
+        let existing = await this.db.getRow(
           'SELECT * FROM publish_schedule WHERE youtube_id = ?',
           [youtubeId]
         );
+
+        // Se não encontrou por youtube_id, busca por título normalizado para vincular ao agendamento local existente
+        if (!existing) {
+          const normTitle = title.trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ');
+          const allScheduled = await this.db.getAllRows(
+            "SELECT * FROM publish_schedule ORDER BY (CASE WHEN youtube_url IS NOT NULL THEN 1 ELSE 0 END) DESC, id DESC"
+          );
+          existing = allScheduled.find(s => {
+            const sNorm = (s.title || '').trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ');
+            return sNorm && (sNorm === normTitle || sNorm.includes(normTitle) || normTitle.includes(sNorm));
+          }) || null;
+        }
 
         if (isScheduled) {
           if (existing) {
             await this.db.executeQuery(
               `UPDATE publish_schedule SET
-                title = ?, publish_time = ?, status = 'scheduled', metadata = ?, youtube_url = ?
+                title = ?, publish_time = ?, status = 'scheduled', metadata = ?, youtube_id = ?, youtube_url = ?
                WHERE id = ?`,
-              [title, publishAt, JSON.stringify(metadata), youtubeUrl, existing.id]
+              [title, publishAt, JSON.stringify(metadata), youtubeId, youtubeUrl, existing.id]
             );
             syncedVideos.push({ id: existing.id, title, publishTime: publishAt, youtubeId, isShort });
+            // Remove duplicatas residuais com o mesmo título ou mesmo youtube_id
+            await this.db.executeQuery(
+              `DELETE FROM publish_schedule WHERE (LOWER(TRIM(title)) = ? OR youtube_id = ?) AND id != ?`,
+              [title.trim().toLowerCase(), youtubeId, existing.id]
+            );
           } else {
             const newId = `schedule_yt_${youtubeId}`;
             await this.db.executeQuery(
@@ -755,10 +776,15 @@ class ProductionWorkflowService {
         } else if (existing && existing.status === 'scheduled' && privacyStatus === 'public') {
           // Vídeo já foi publicado
           await this.db.executeQuery(
-            "UPDATE publish_schedule SET status = 'published', published_at = ? WHERE id = ?",
-            [v.snippet?.publishedAt || new Date().toISOString(), existing.id]
+            "UPDATE publish_schedule SET status = 'published', published_at = ?, youtube_id = ?, youtube_url = ? WHERE id = ?",
+            [v.snippet?.publishedAt || new Date().toISOString(), youtubeId, youtubeUrl, existing.id]
           );
         }
+      }
+
+      // Varredura de segurança para assegurar que nenhum título repetido exista na publish_schedule
+      if (typeof this.db.deduplicatePublishSchedule === 'function') {
+        await this.db.deduplicatePublishSchedule();
       }
 
       this.logger.success(`Sincronização concluída: ${syncedVideos.length} vídeos agendados sincronizados do YouTube.`);
@@ -1236,9 +1262,19 @@ Retorne ESTRITAMENTE um JSON válido no seguinte formato:
     format = 'explainer',
     language = 'it-IT',
     fieldAHistory = '',
-    channelName = ''
+    channelName = '',
+    targetCharacters = 10000
   } = {}) {
     if (!topic) throw new Error('O tema do vídeo é obrigatório para gerar o roteiro');
+
+    const effectiveTargetChars = Number(targetCharacters) && Number(targetCharacters) >= 5000
+      ? Math.round(Number(targetCharacters))
+      : 10000;
+    const targetPart1 = Math.round(effectiveTargetChars / 2);
+    const targetPart2 = effectiveTargetChars - targetPart1;
+    const blockCharsTarget = Math.round(effectiveTargetChars / 14);
+    const minPart1 = Math.round(targetPart1 * 0.96);
+    const minPart2 = Math.round(targetPart2 * 0.96);
 
     const effectiveAngle = authorAngle || angle || '';
 
@@ -1271,7 +1307,7 @@ Retorne ESTRITAMENTE um JSON válido no seguinte formato:
     };
     const officialBible = bibleTranslations[language] || 'Tradução Bíblica Oficial Reconhecida';
 
-    this.logger.info(`Gerando roteiro estruturado de alta retenção (alvo: 10.000 caracteres) para "${topic}" em ${targetLangName}...`);
+    this.logger.info(`Gerando roteiro estruturado de alta retenção (alvo: ${effectiveTargetChars.toLocaleString('pt-BR')} caracteres) para "${topic}" em ${targetLangName}...`);
 
     let rawData = null;
     if (this.aiText.isAvailable()) {
@@ -1298,12 +1334,12 @@ IDIOMA E TRADUÇÃO BÍBLICA OBRIGATÓRIA:
 - Aspas duplas " devem ser usadas EXCLUSIVAMENTE para a citação bíblica fiel.
 
 ════════════════════════════════════════
-REGRA CRAVADA DE EXTENSÃO (10.000 CARACTERES INEGOCIÁVEIS):
+REGRA CRAVADA DE EXTENSÃO (${effectiveTargetChars.toLocaleString('pt-BR')} CARACTERES INEGOCIÁVEIS):
 ════════════════════════════════════════
-Esta regra é CRUCIAL e rigorosamente cravada. Roteiros abaixo de 9.700 caracteres inviabilizam a narração e não são aceitos.
-Para atingir os 10.000 caracteres exigidos sem resumos superficiais, você deve desenvolver integralmente uma narrativa estruturada em 14 BLOCOS NARRATIVOS de 700 a 750 caracteres cada, com parágrafos densos e ricos em história, línguas bíblicas e contexto:
+Esta regra é CRUCIAL e rigorosamente cravada. Roteiros abaixo de ${Math.round(effectiveTargetChars * 0.95)} caracteres inviabilizam a narração e não são aceitos.
+Para atingir os ${effectiveTargetChars.toLocaleString('pt-BR')} caracteres exigidos sem resumos superficiais, você deve desenvolver integralmente uma narrativa estruturada em 14 BLOCOS NARRATIVOS de ~${blockCharsTarget} caracteres cada, com parágrafos densos e ricos em história, línguas bíblicas e contexto:
 
-PARTE 1 (EXATAMENTE 7 BLOCOS = 4.800 a 4.950 CARACTERES OBRIGATÓRIOS):
+PARTE 1 (EXATAMENTE 7 BLOCOS = ${minPart1} a ${targetPart1} CARACTERES OBRIGATÓRIOS):
 - Bloco 1 (Ato 1): Gancho agressivo cumprindo a promessa imediatamente nos primeiros 15 segundos + plantio explícito do Segredo Central e do Loop Principal.
 - Bloco 2 (Ato 1): Cenário histórico-cultural concreto apresentado como revelação (sem anacronismos, detalhes do período romano/hebraico).
 - Bloco 3 (Ato 1): Personagem no ponto mais vulnerável e humano + abertura do Micro-loop 1.
@@ -1312,7 +1348,7 @@ PARTE 1 (EXATAMENTE 7 BLOCOS = 4.800 a 4.950 CARACTERES OBRIGATÓRIOS):
 - Bloco 6 (Ato 2): Primeira camada do Segredo Central + CTA Orgânico Principal (conectar a dor do personagem ao espectador e convidar a salvar o vídeo antes do momento crucial).
 - Bloco 7 (Ato 2): Fechamento do Micro-loop 2 + Micro-gancho de virada dramática antes do corte para a Parte 2.
 
-PARTE 2 (EXATAMENTE 7 BLOCOS = 4.850 a 5.000 CARACTERES OBRIGATÓRIOS):
+PARTE 2 (EXATAMENTE 7 BLOCOS = ${minPart2} a ${targetPart2} CARACTERES OBRIGATÓRIOS):
 - Bloco 8 (Ato 3): Nova pista arqueológica, linguística ou textual + abertura do Micro-loop 3.
 - Bloco 9 (Ato 3): Citação bíblica literal e fiel da ${officialBible} marcada entre aspas duplas no ápice emocional + fechamento do Micro-loop 3.
 - Bloco 10 (Ato 4): Revelação definitiva do Segredo Central e resposta completa do Loop Principal.
@@ -1329,8 +1365,8 @@ Retorne ESTRITAMENTE um JSON válido com a seguinte estrutura:
   "hook": "Gancho falado de abertura (1 a 3 frases afiadas, ~200 carac.)",
   "hookTypeUsed": "TIPO 1 — O Segredo Suprimido (ou o tipo selecionado/aplicado)",
   "angleFamilyUsed": "Palavra original (ou a família selecionada/aplicada)",
-  "part1": "Texto falado integral e corrido da PARTE 1 (EXATAMENTE ~4.850 a 4.950 caracteres em ${targetLangName})...",
-  "part2": "Texto falado integral e corrido da PARTE 2 (EXATAMENTE ~4.850 a 5.000 caracteres em ${targetLangName})...",
+  "part1": "Texto falado integral e corrido da PARTE 1 (EXATAMENTE ~${minPart1} a ${targetPart1} caracteres em ${targetLangName})...",
+  "part2": "Texto falado integral e corrido da PARTE 2 (EXATAMENTE ~${minPart2} a ${targetPart2} caracteres em ${targetLangName})...",
   "pinnedCommentQuestion": "Pergunta instigante, curta (máx 20 palavras) para fixar nos comentários em ${targetLangName}",
   "historicalBasis": "Resumo de 1 linha da base histórica, arqueológica ou linguística utilizada",
   "authorAngleSummary": "${effectiveAngle || topic}"
@@ -1345,25 +1381,26 @@ Retorne ESTRITAMENTE um JSON válido com a seguinte estrutura:
     }
 
     if (!rawData || !rawData.hook || !rawData.part1 || !rawData.part2) {
-      rawData = this.generateFallbackScript(topic, language, effectiveAngle);
+      rawData = this.generateFallbackScript(topic, language, effectiveAngle, effectiveTargetChars);
     }
 
-    // Regra Cravada: Assegurar rigorosamente a meta de ~10.000 caracteres (~5.000 por bloco)
-    rawData = this.ensureTargetScriptLength(rawData, topic, language, effectiveAngle);
+    // Regra Cravada: Assegurar rigorosamente a meta configurada pelo usuário
+    rawData = this.ensureTargetScriptLength(rawData, topic, language, effectiveAngle, effectiveTargetChars);
 
-    // Unir o texto e fatiar em 2 blocos de até 5.000 caracteres cada
+    // Unir o texto e fatiar em 2 blocos proporcionais
     const block1Candidate = `${rawData.hook}\n\n${rawData.part1}`.trim();
     const block2Candidate = (rawData.part2 || '').trim();
     const fullSpokenText = `${rawData.hook}\n\n${rawData.part1}\n\n${rawData.part2}`.trim();
 
+    const maxBlockChars = Math.max(5000, targetPart2 + 100);
     let narrationBlocks = [];
-    if (block1Candidate.length <= 5000 && block2Candidate.length <= 5000 && block2Candidate.length > 0) {
+    if (block1Candidate.length <= maxBlockChars && block2Candidate.length <= maxBlockChars && block2Candidate.length > 0) {
       narrationBlocks = [
         { index: 1, title: 'Bloco 1', charCount: block1Candidate.length, text: block1Candidate },
         { index: 2, title: 'Bloco 2', charCount: block2Candidate.length, text: block2Candidate }
       ];
     } else {
-      narrationBlocks = this.splitIntoNarrationBlocks(fullSpokenText, 5000, 2);
+      narrationBlocks = this.splitIntoNarrationBlocks(fullSpokenText, maxBlockChars, 2);
     }
 
     const part1Chars = (rawData.part1 || '').length;
@@ -1419,18 +1456,21 @@ ${rawData.historicalBasis || 'Contexto arqueológico e variantes textuais dos ma
   }
 
   /**
-   * Garante a regra cravada de ~10.000 caracteres (~4.850 a 5.000 caracteres por bloco).
-   * Se o modelo de IA ou o fallback gerar um texto menor que 4.800 caracteres em qualquer parte,
+   * Garante a regra cravada de caracteres conforme a meta configurada pelo usuário.
+   * Se o modelo de IA ou o fallback gerar um texto menor que o teto estipulado,
    * este método expande a narrativa de forma fluida e profunda, respeitando o idioma do canal,
-   * o tema e a densidade histórica e bíblica, sem nunca ultrapassar o limite rígido de 5.000 caracteres por bloco.
+   * o tema e a densidade histórica e bíblica, atingindo a meta com precisão.
    */
-  ensureTargetScriptLength(data, topic, language, angle = '') {
+  ensureTargetScriptLength(data, topic, language, angle = '', targetChars = 10000) {
     if (!data) return data;
 
-    const targetPart1Min = 4750;
-    const targetPart1Max = 4900;
-    const targetPart2Min = 4850;
-    const targetPart2Max = 5000;
+    const effectiveTarget = Number(targetChars) && Number(targetChars) >= 5000
+      ? Math.round(Number(targetChars))
+      : 10000;
+    const targetPart1Max = Math.round(effectiveTarget / 2);
+    const targetPart1Min = Math.round(targetPart1Max * 0.96);
+    const targetPart2Max = effectiveTarget - targetPart1Max;
+    const targetPart2Min = Math.round(targetPart2Max * 0.96);
 
     let part1 = (data.part1 || '').trim();
     let part2 = (data.part2 || '').trim();
@@ -1547,7 +1587,7 @@ ${rawData.historicalBasis || 'Contexto arqueológico e variantes textuais dos ma
     };
   }
 
-  generateFallbackScript(topic, language, angle = '') {
+  generateFallbackScript(topic, language, angle = '', _targetChars = 10000) {
     const isItalian = String(language).toLowerCase().startsWith('it');
     const isPolish = String(language).toLowerCase().startsWith('pl');
     const isSpanish = String(language).toLowerCase().startsWith('es');
@@ -2278,7 +2318,14 @@ RETURN ONLY VALID JSON in this structure:
    * timestamps calculados em cima dos 5 Atos (100 ppm, ~14min), citação oficial da Bíblia por idioma,
    * CTA aberto sem resposta fixa e 7 hashtags limpas separadas por vírgula.
    */
-  async generateSEO({ script, topic, language = 'it-IT', channelName = '' } = {}) {
+  async generateSEO({
+    script,
+    topic,
+    language = 'it-IT',
+    channelName = '',
+    previousTitle = '',
+    previousDescription = ''
+  } = {}) {
     const cleanTopic = topic || script?.topic || 'Histórico / Bíblico';
     const fullScript = script?.fullScript || (typeof script === 'string' ? script : `${script?.hook || ''}\n${script?.part1 || ''}\n${script?.part2 || ''}`.trim());
     this.logger.info(`Gerando SEO avançado para "${cleanTopic}" no idioma ${language}...`);
@@ -2318,6 +2365,21 @@ SCRIPT CONTENT:
 """
 ${fullScript ? fullScript.slice(0, 6000) : cleanTopic}
 """
+${previousTitle ? `
+════════════════════════════════════════
+PREVIOUS ATTEMPT REJECTED (DO NOT REPEAT):
+════════════════════════════════════════
+The user did NOT like the previous title:
+PREVIOUS TITLE: "${previousTitle}"
+${previousDescription ? `PREVIOUS DESCRIPTION OPENING: "${previousDescription.slice(0, 160)}..."` : ''}
+
+CRITICAL RE-CREATION & CHANNEL LEVERAGE RULES:
+1. Re-analyze the SCRIPT CONTENT deeply.
+2. Select a COMPLETELY DIFFERENT hook, emotional trigger, or specific biblical detail from the script.
+3. DO NOT repeat the words, angle, or formula of the rejected title.
+4. Elevate the curiosity gap and retention potential for the YouTube algorithm (High CTR / High AVD).
+5. Make this new creation visibly fresher, bolder, and more compelling than the previous one!
+` : ''}
 
 EXECUTE THE FOLLOWING 3 TASKS IN STRICT ACCORDANCE WITH THESE RULES:
 
@@ -2514,7 +2576,8 @@ ${historicalBasis || 'Manuscritos antigos do primeiro século e contexto histór
     thumbnailPrompt = null,
     seo = null,
     bundle = null,
-    format = 'explainer'
+    format = 'explainer',
+    replaceVideoId = null
   } = {}) {
     if (!videoPath) throw new Error('O caminho do arquivo de vídeo .mp4 é obrigatório');
 
@@ -2603,6 +2666,20 @@ ${historicalBasis || 'Manuscritos antigos do primeiro século e contexto histór
             await this.db.updateScheduleEntry(scheduleEntry);
           }
           this.logger.success(`Vídeo enviado e programado com sucesso no YouTube: ${scheduleEntry.youtubeUrl}`);
+
+          // Se for substituição de um vídeo com falha anterior, remove do canal e limpa agendamento antigo
+          if (replaceVideoId && replaceVideoId !== uploadResult.id) {
+            try {
+              if (typeof publishingAgent.deleteVideoFromYouTube === 'function') {
+                await publishingAgent.deleteVideoFromYouTube(replaceVideoId);
+              }
+              if (this.db && this.db.db) {
+                this.db.db.run('DELETE FROM publish_schedule WHERE youtube_id = ? AND id != ?', [replaceVideoId, scheduleEntry.id], () => {});
+              }
+            } catch (delErr) {
+              this.logger.warn(`Aviso ao remover rascunho anterior ${replaceVideoId}: ${delErr.message}`);
+            }
+          }
         }
       } catch (err) {
         uploadNotice = err.message;

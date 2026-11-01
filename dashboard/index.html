@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=20261030_01">
+  <link rel="stylesheet" href="/styles.css?v=20261031_15">
 </head>
 <body>
   <div class="aurora" aria-hidden="true"></div>
@@ -43,10 +43,40 @@
           <p class="eyebrow" id="view-eyebrow">VISÃO GERAL DO OPERADOR</p>
           <h1 id="view-title">Saiba o que acontece a seguir.</h1>
         </div>
+
+        <!-- Timeline Dinâmico do Processo de Produção (Etapas 2 a 7) -->
+        <div id="wf-topbar-steps-timeline" class="topbar-production-timeline" title="Clique em qualquer etapa para ir direto até ela">
+          <div class="topbar-timeline-track">
+            <button type="button" class="topbar-step-pill" data-step-target="#wf-step-2-panel" id="topbar-pill-step-2">
+              <span class="step-badge">2</span> <span class="step-label">Roteiro</span> <span class="step-icon" id="topbar-ico-2">⌛</span>
+            </button>
+            <span class="topbar-timeline-sep">›</span>
+            <button type="button" class="topbar-step-pill" data-step-target="#wf-step-3-panel" id="topbar-pill-step-3">
+              <span class="step-badge">3</span> <span class="step-label">Narração</span> <span class="step-icon" id="topbar-ico-3">⌛</span>
+            </button>
+            <span class="topbar-timeline-sep">›</span>
+            <button type="button" class="topbar-step-pill" data-step-target="#wf-step-4-panel" id="topbar-pill-step-4">
+              <span class="step-badge">4</span> <span class="step-label">Imagens</span> <span class="step-icon" id="topbar-ico-4">⌛</span>
+            </button>
+            <span class="topbar-timeline-sep">›</span>
+            <button type="button" class="topbar-step-pill" data-step-target="#wf-step-5-panel" id="topbar-pill-step-5">
+              <span class="step-badge">5</span> <span class="step-label">Capas</span> <span class="step-icon" id="topbar-ico-5">⌛</span>
+            </button>
+            <span class="topbar-timeline-sep">›</span>
+            <button type="button" class="topbar-step-pill" data-step-target="#wf-step-6-panel" id="topbar-pill-step-6">
+              <span class="step-badge">6</span> <span class="step-label">SEO</span> <span class="step-icon" id="topbar-ico-6">⌛</span>
+            </button>
+            <span class="topbar-timeline-sep">›</span>
+            <button type="button" class="topbar-step-pill" data-step-target="#wf-step-8-panel" id="topbar-pill-step-7">
+              <span class="step-badge">7</span> <span class="step-label">Postagem</span> <span class="step-icon" id="topbar-ico-7">⌛</span>
+            </button>
+          </div>
+        </div>
+
         <div class="top-actions">
           <button id="refresh-button" class="icon-button" title="Atualizar dados do painel" aria-label="Atualizar painel"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 11-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button>
-          <button id="btn-envio-cortes-top" class="button secondary" style="border-color: rgba(244, 63, 94, 0.45); background: rgba(244, 63, 94, 0.12); color: #f43f5e; font-weight: 600; display: inline-flex; align-items: center; gap: 6px;" title="Abrir tela limpa focada apenas na postagem e agendamento de cortes/shorts">⚡ Envio de Cortes</button>
-          <button id="generate-button" class="button primary" title="Abrir o Youtube - Modelador">🎬 Youtube - Modelador</button>
+          <button id="btn-envio-cortes-top" class="button secondary" style="border-color: rgba(244, 63, 94, 0.45); background: rgba(244, 63, 94, 0.12); color: #f43f5e; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; text-wrap: nowrap; flex-shrink: 0;" title="Alternar entre Estúdio Completo e Envio de Cortes">⚡ Envio de Cortes</button>
+          <button id="generate-button" class="button primary" style="white-space: nowrap; text-wrap: nowrap; flex-shrink: 0;" title="Abrir o Youtube - Modelador">🎬 Youtube - Modelador</button>
         </div>
       </header>
 
@@ -365,55 +395,76 @@
               <span class="chip-metric chip-shorts" id="wf-count-shorts">⚡ <strong>0</strong> shorts</span>
               <span class="chip-metric chip-longs" id="wf-count-longs">🎬 <strong>0</strong> longos</span>
             </div>
-            <div class="themes-filter-actions">
-              <div class="themes-filters-group">
-                <!-- Filtro por Formato (Shorts vs Longos) -->
-                <div class="format-filter-tabs">
-                  <button type="button" class="format-tab active" data-filter-format="all">Todos Formatos</button>
-                  <button type="button" class="format-tab tab-short" data-filter-format="short">⚡ Shorts</button>
-                  <button type="button" class="format-tab tab-long" data-filter-format="long">🎬 Longos</button>
+            <!-- Barra de Filtros e Ações do Cronograma (Dois níveis organizados) -->
+            <div class="themes-toolbar-container">
+              <!-- Nível 1: Filtros de Conteúdo (Esquerda) e Ações Rápidas (Direita) -->
+              <div class="themes-toolbar-row themes-toolbar-primary">
+                <div class="themes-filters-group">
+                  <!-- Filtro por Formato (Shorts vs Longos) -->
+                  <div class="format-filter-tabs" title="Filtrar por formato de vídeo">
+                    <button type="button" class="format-tab active" data-filter-format="all">Todos Formatos</button>
+                    <button type="button" class="format-tab tab-short" data-filter-format="short">⚡ Shorts</button>
+                    <button type="button" class="format-tab tab-long" data-filter-format="long">🎬 Longos</button>
+                  </div>
+
+                  <div class="filter-group-divider" aria-hidden="true"></div>
+
+                  <!-- Filtro por Status do Cronograma -->
+                  <div class="themes-filter-tabs" title="Filtrar por status do tema">
+                    <button type="button" class="filter-tab active" data-filter-status="all">Todos Status</button>
+                    <button type="button" class="filter-tab" data-filter-status="pending">⏳ Pendentes</button>
+                    <button type="button" class="filter-tab" data-filter-status="in_production">⚙️ Em Produção</button>
+                    <button type="button" class="filter-tab" data-filter-status="posted">✅ Já Postados</button>
+                  </div>
+
+                  <div class="filter-group-divider" aria-hidden="true"></div>
+
+                  <!-- Alternador de Escopo Temporal: Hoje & Próximos vs Histórico Completo -->
+                  <div class="themes-scope-tabs" role="group" aria-label="Escopo temporal dos temas" title="Alternar entre foco nos próximos dias ou histórico completo">
+                    <button type="button" class="view-mode-tab active" data-filter-scope="upcoming">🚀 Hoje &amp; Próximos</button>
+                    <button type="button" class="view-mode-tab" data-filter-scope="all">📚 Histórico Completo</button>
+                  </div>
                 </div>
 
-                <div class="filter-group-divider" aria-hidden="true"></div>
-
-                <!-- Filtro por Status do Cronograma -->
-                <div class="themes-filter-tabs">
-                  <button type="button" class="filter-tab active" data-filter-status="all">Todos Status</button>
-                  <button type="button" class="filter-tab" data-filter-status="pending">⏳ Pendentes</button>
-                  <button type="button" class="filter-tab" data-filter-status="in_production">⚙️ Em Produção</button>
-                  <button type="button" class="filter-tab" data-filter-status="posted">✅ Já Postados</button>
-                </div>
-
-                <div class="filter-group-divider" aria-hidden="true"></div>
-
-                <!-- Alternador de Escopo Temporal: Hoje & Próximos vs Histórico Completo -->
-                <div class="themes-scope-tabs" role="group" aria-label="Escopo temporal dos temas">
-                  <button type="button" class="view-mode-tab active" data-filter-scope="upcoming" title="Foco no planejamento: exibe Hoje e os próximos lançamentos futuros">🚀 Hoje &amp; Próximos</button>
-                  <button type="button" class="view-mode-tab" data-filter-scope="all" title="Exibe todo o cronograma incluindo histórico de postagens passadas">📚 Histórico Completo</button>
-                </div>
-
-                <div class="filter-group-divider" aria-hidden="true"></div>
-
-                <!-- Alternador de Visualização: Por Dia vs Grade Geral -->
-                <div class="themes-view-mode-tabs" role="group" aria-label="Modo de visualização dos temas">
-                  <button type="button" class="view-mode-tab active" data-filter-view-mode="by_day" title="Agrupar cards em linhas exclusivas por dia (6 vídeos alinhados)">📅 Por Dia</button>
-                  <button type="button" class="view-mode-tab" data-filter-view-mode="grid" title="Visualização em grade contínua tradicional">☷ Grade Geral</button>
-                </div>
-
-                <div class="filter-group-divider" aria-hidden="true"></div>
-
-                <!-- Alternador de Ordem: Crescente vs Decrescente -->
-                <div class="themes-sort-order-tabs" role="group" aria-label="Ordem de exibição por data">
-                  <button type="button" class="view-mode-tab" data-sort-direction="asc" title="Ordem cronológica crescente: dias mais antigos/próximos primeiro">⬆️ Crescente</button>
-                  <button type="button" class="view-mode-tab active" data-sort-direction="desc" title="Ordem cronológica decrescente: dias mais recentes/futuros no topo">⬇️ Decrescente</button>
+                <!-- Ações do Cronograma à Direita -->
+                <div class="themes-actions-right">
+                  <button type="button" id="wf-toggle-all-details-btn" class="button ghost small" title="Expandir ou ocultar todos os ganchos e ângulos de uma só vez">👁️ Detalhes</button>
+                  <button type="button" id="wf-export-themes-btn" class="button ghost small" title="Copiar lista de temas para colar no Excel ou bloco de notas">📋 Copiar / Exportar</button>
+                  <button type="button" id="wf-deduplicate-themes-btn" class="button ghost small theme-btn-dupe" title="Varre o cronograma e remove automaticamente cópias duplicadas com o mesmo tema e data">🧹 Limpar Duplicados</button>
+                  <button type="button" id="wf-clear-all-themes-btn" class="button ghost small danger" style="color: var(--red); border-color: rgba(239, 68, 68, 0.35); background: rgba(239, 68, 68, 0.06); font-weight: 500;" title="Excluir apenas temas pendentes gerados por engano">🗑️ Limpar Pendentes...</button>
                 </div>
               </div>
 
-              <div class="themes-actions-right">
-                <button type="button" id="wf-toggle-all-details-btn" class="button ghost small" title="Expandir ou ocultar todos os ganchos e ângulos de uma só vez">👁️ Expandir Detalhes</button>
-                <button type="button" id="wf-export-themes-btn" class="button ghost small" title="Copiar lista de temas para colar no Excel ou bloco de notas">📋 Copiar / Exportar</button>
-                <button type="button" id="wf-deduplicate-themes-btn" class="button ghost small" style="border-color: rgba(245, 158, 11, 0.35); color: #fbbf24; background: rgba(245, 158, 11, 0.08); font-weight: 500;" title="Varre o cronograma e remove automaticamente cópias duplicadas com o mesmo tema e data">🧹 Limpar Duplicados</button>
-                <button type="button" id="wf-clear-all-themes-btn" class="button ghost small danger" style="color: var(--red); border-color: rgba(239, 68, 68, 0.35); background: rgba(239, 68, 68, 0.06); font-weight: 500;" title="Excluir apenas temas pendentes gerados por engano">🗑️ Limpar Pendentes...</button>
+              <!-- Nível 2: Barra Dedicada de Visualização & Ordenação -->
+              <div class="themes-toolbar-row themes-toolbar-secondary">
+                <div class="themes-view-controls-left">
+                  <!-- Visualização -->
+                  <div class="toolbar-control-cluster">
+                    <span class="toolbar-label-tag">Visualização:</span>
+                    <div class="themes-view-mode-tabs" role="group" aria-label="Modo de visualização dos temas">
+                      <button type="button" class="view-mode-tab active" data-filter-view-mode="by_day" title="Agrupar cards em linhas exclusivas por dia (6 vídeos alinhados)">📅 Por Dia</button>
+                      <button type="button" class="view-mode-tab" data-filter-view-mode="grid" title="Visualização em grade contínua tradicional">☷ Grade Geral</button>
+                    </div>
+                  </div>
+
+                  <div class="filter-group-divider" aria-hidden="true"></div>
+
+                  <!-- Ordenação -->
+                  <div class="toolbar-control-cluster">
+                    <span class="toolbar-label-tag">Ordem:</span>
+                    <div class="themes-sort-order-tabs" role="group" aria-label="Ordem de exibição por data">
+                      <button type="button" class="view-mode-tab active" data-sort-direction="asc" title="Ordem cronológica crescente: dias mais antigos/próximos primeiro">⬆️ Crescente</button>
+                      <button type="button" class="view-mode-tab" data-sort-direction="desc" title="Ordem cronológica decrescente: dias mais recentes/futuros no topo">⬇️ Decrescente</button>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="themes-view-controls-right">
+                  <span class="toolbar-status-badge">
+                    <span class="pulse-indicator"></span>
+                    <span id="wf-toolbar-view-hint">Modo: <strong>Por Dia (Crescente)</strong></span>
+                  </span>
+                </div>
               </div>
             </div>
           </div>
@@ -507,6 +558,7 @@
             </div>
             <div id="engagement-meta" class="engagement-meta"></div>
             <div id="engagement-themes"></div>
+            <div id="engagement-comments-list" class="engagement-comments-list" style="margin-top: 14px;"></div>
           </article>
           <article class="panel">
             <div class="panel-heading">
@@ -719,7 +771,7 @@
         <article class="panel workflow-step-panel wf-production-only-step" id="wf-step-2-panel">
           <div class="panel-heading">
             <div>
-              <p class="eyebrow">ETAPA 2 · ROTEIRO DE ALTA RETENÇÃO (10.000 CARACTERES)</p>
+              <p class="eyebrow" id="wf-step-2-eyebrow">ETAPA 2 · ROTEIRO DE ALTA RETENÇÃO (<span id="wf-eyebrow-target-chars-label">10.000</span> CARACTERES)</p>
               <h2>Geração de Roteiro</h2>
               <p class="panel-subtitle">Pré-configurado com a inteligência editorial do canal (rotação de ganchos e retenção profunda).</p>
             </div>
@@ -833,11 +885,32 @@
               </div>
             </div>
 
-            <!-- Botão Principal de Ação Limpo e Central -->
+            <!-- Botão Principal de Ação e Limitador de Caracteres -->
             <div class="form-actions script-generate-action-bar" style="margin-top: 16px;">
               <button id="wf-generate-script-btn" class="button primary large action-generate-clean">
-                ⚡ Gerar Roteiro Completo de 10.000 Caracteres
+                ⚡ Gerar Roteiro Completo de <span id="wf-btn-target-chars-label">10.000</span> Caracteres
               </button>
+
+              <!-- Caixa de Limite / Meta de Caracteres Dinâmica -->
+              <div class="target-chars-limiter-box" id="wf-target-chars-box">
+                <div class="target-chars-header">
+                  <label for="wf-script-target-chars" class="target-chars-label">
+                    <span>🎯 Limite de Caracteres para Digitar:</span>
+                    <small class="target-chars-hint">Padrão: 10.000</small>
+                  </label>
+                </div>
+                <div class="target-chars-input-row">
+                  <div class="target-chars-input-wrap">
+                    <input type="number" id="wf-script-target-chars" class="target-chars-input" min="5000" max="30000" step="500" value="10000" placeholder="10000" title="Quantidade de caracteres do roteiro para a IA. Se apagado por engano, crava em 10.000 automaticamente.">
+                    <span class="target-chars-unit">carac.</span>
+                  </div>
+                  <div class="target-chars-chips">
+                    <button type="button" class="chip-target-chars active" data-chars="10000" title="Padrão do canal: 10.000 caracteres">10k</button>
+                    <button type="button" class="chip-target-chars" data-chars="12000" title="Documentário mais longo: 12.000 caracteres">12k</button>
+                    <button type="button" class="chip-target-chars" data-chars="15000" title="Super documentário denso: 15.000 caracteres">15k</button>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -962,7 +1035,7 @@
         </article>
 
         <!-- Etapa 4: Gerador de Imagens (35 Prompts em Inglês para Google Flow) -->
-        <article class="panel workflow-step-panel">
+        <article class="panel workflow-step-panel" id="wf-step-4-panel">
           <div class="panel-heading">
             <div>
               <p class="eyebrow">ETAPA 4 · GERADOR DE IMAGENS</p>
@@ -1027,21 +1100,71 @@
                 </p>
               </div>
             </div>
-            <button type="button" id="wf-toggle-audit-details-btn" class="button ghost small" style="font-size: 11.5px; padding: 4px 8px; color: #38bdf8; border-color: rgba(56, 189, 248, 0.3);">
+            <button type="button" id="wf-toggle-audit-details-btn" class="button ghost small" style="font-size: 11.5px; padding: 4px 8px; color: #38bdf8; border-color: rgba(56, 189, 248, 0.3); cursor: pointer;">
               👁️ Ver Capas Analisadas
             </button>
           </div>
 
-          <div id="wf-audit-details-box" class="hidden" style="margin-bottom: 14px; padding: 12px; border-radius: 8px; background: var(--surface-2); border: 1px solid var(--border); font-size: 12.5px;">
-            <div style="font-weight: 600; margin-bottom: 6px; color: var(--text);">Últimas Capas do Canal Analisadas:</div>
-            <ul id="wf-audit-videos-list" style="margin: 0 0 10px 18px; padding: 0; color: var(--text-2); line-height: 1.5;">
-              <li>Carregando histórico do canal...</li>
+          <div id="wf-audit-details-box" class="hidden" style="margin-bottom: 16px; padding: 16px; border-radius: 10px; background: rgba(18, 22, 34, 0.95); border: 1px solid rgba(56, 189, 248, 0.3); font-size: 12.5px; box-shadow: 0 8px 24px rgba(0,0,0,0.4);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 8px;">
+              <span style="font-weight: 700; color: #38bdf8; font-size: 13px; display: flex; align-items: center; gap: 6px;">
+                <span>🎯</span> Auditoria Visual e Manipulação de Futuras Capas
+              </span>
+              <span style="font-size: 11px; color: var(--muted);">Anti-Fadiga de Miniaturas Ativa</span>
+            </div>
+
+            <!-- Últimas Capas Analisadas -->
+            <div style="font-weight: 600; margin-bottom: 6px; color: var(--text);">Últimas Capas Publicadas no Canal (Analisadas para não repetir):</div>
+            <ul id="wf-audit-videos-list" style="margin: 0 0 14px 18px; padding: 0; color: var(--text-2); line-height: 1.6;">
+              <li>Carregando histórico recente do canal...</li>
             </ul>
-            <div style="font-weight: 600; margin-bottom: 4px; color: #10b981;">Diretrizes Anti-Monotonia Aplicadas nos Prompts:</div>
-            <div id="wf-audit-rules-content" style="color: var(--text-2); font-size: 12px; line-height: 1.4;">
+
+            <!-- Controles para Manipular as Futuras Capas -->
+            <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 12px; margin-bottom: 12px;">
+              <div style="font-weight: 700; margin-bottom: 8px; color: #fbbf24; display: flex; align-items: center; gap: 6px;">
+                <span>⚙️</span> Escolha Como Manipular as Próximas Capas do Nano Banana:
+              </div>
+              <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px;">
+                <label style="display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--text-2);">
+                  <span>🌅 Ambiente / Cenário Predominante:</span>
+                  <select id="wf-nb-custom-scenario" style="padding: 6px 8px; font-size: 12px; border-radius: 6px; background: rgba(0,0,0,0.5); border: 1px solid var(--border); color: #fff;">
+                    <option value="auto">🎨 Automático (Anti-Mesmice Balanceada)</option>
+                    <option value="sun_colonnade">☀️ Colunata Solar de Mármore & Luz Celestial</option>
+                    <option value="golden_cliff">🌅 Penhasco Panorâmico na Alvorada Dourada</option>
+                    <option value="sacred_garden">🌿 Jardim Sagrado & Oásis com Águas Cristalinas</option>
+                    <option value="mystic_night">🌌 Noite Profunda com Raios Divinos Volumétricos</option>
+                    <option value="temple_courtyard">🏛️ Pátio Monumental do Templo Antigo</option>
+                  </select>
+                </label>
+
+                <label style="display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--text-2);">
+                  <span>🎨 Paleta de Cores & Contraste:</span>
+                  <select id="wf-nb-custom-palette" style="padding: 6px 8px; font-size: 12px; border-radius: 6px; background: rgba(0,0,0,0.5); border: 1px solid var(--border); color: #fff;">
+                    <option value="auto">🌈 Automática (Zero Tons Escuros de Lama)</option>
+                    <option value="gold_cobalt">⚡ Ouro Solar & Azul Cobalto Profundo</option>
+                    <option value="purple_marble">👑 Púrpura Imperial & Mármore Branco</option>
+                    <option value="emerald_celestial">✨ Esmeralda Sagrada & Dourado</option>
+                    <option value="fire_crimson">🔥 Fogo Divino & Céu Carmesim</option>
+                  </select>
+                </label>
+
+                <label style="display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--text-2);">
+                  <span>🔤 Estilo de Texto na Thumbnail (CTR):</span>
+                  <select id="wf-nb-custom-typo" style="padding: 6px 8px; font-size: 12px; border-radius: 6px; background: rgba(0,0,0,0.5); border: 1px solid var(--border); color: #fff;">
+                    <option value="auto">🔤 Variada (1 estilo diferente por versão)</option>
+                    <option value="bold_3d_yellow">📱 Ultra-Bold 3D Amarelo Neon (Mobile Focus)</option>
+                    <option value="roman_stone">🏛️ Romano Cinzelado em Mármore Nobre</option>
+                    <option value="headline_badge">🏷️ Badge de Manchete com Caixa de Realce</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+
+            <div style="font-weight: 600; margin-bottom: 4px; color: #10b981;">Regras Obrigatórias Injetadas nos Prompts:</div>
+            <div id="wf-audit-rules-content" style="color: var(--text-2); font-size: 11.5px; line-height: 1.45;">
               • <strong>Cenários:</strong> Proibido repetir câmaras de pedra escuras e tochas. Exigidos cenários abertos, colunatas solares e terraços de mármore.<br>
-              • <strong>Cores:</strong> Eliminação de sépia/marrom lamaçoso. Paletas de alto contraste: Ouro Solar & Azul Cobalto, Púrpura & Mármore, Esmeralda Celestial.<br>
-              • <strong>Tipografia:</strong> Fontes diferentes e chamativas por versão: Ultra-Bold 3D amarelo mobile, display romano cinzelado e badges de manchete.
+              • <strong>Cores:</strong> Eliminação de sépia/marrom lamaçoso. Paletas de alto contraste mobile.<br>
+              • <strong>Tipografia:</strong> Textos curtos de 2 palavras com alto relevo e leitura perfeita em telas de celular.
             </div>
           </div>
 
@@ -1069,7 +1192,7 @@
         </article>
 
         <!-- Etapa 6: Título, Descrição SEO e 7 Hashtags (Sem #) -->
-        <article class="panel workflow-step-panel">
+        <article class="panel workflow-step-panel" id="wf-step-6-panel">
           <div class="panel-heading">
             <div>
               <p class="eyebrow">ETAPA 6 · METADADOS DE ALTO CTR</p>
@@ -1147,8 +1270,8 @@
               </div>
             </div>
 
-            <!-- Seletor Visual de Formato (Longo vs Short/Corte) -->
-            <div class="format-toggle-row" style="margin-bottom: 20px; padding: 12px 16px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border); border-radius: 10px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
+            <!-- Seletor Visual de Formato (Longo vs Short/Corte - Oculto pois os modos já são separados no topo) -->
+            <div class="format-toggle-row hidden" id="wf-format-toggle-row" style="margin-bottom: 20px; padding: 12px 16px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border); border-radius: 10px; display: none; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
               <div>
                 <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); font-weight: 700; display: block;">Formato do Conteúdo</span>
                 <strong style="font-size: 14px; color: var(--text);">O que você está postando agora?</strong>
@@ -1181,6 +1304,29 @@
                   <button type="button" class="button primary small" id="wf-choose-video-btn">
                     📂 Buscar Vídeo no Explorer
                   </button>
+                </div>
+
+                <!-- Barra de Progresso Minimalista de Upload do Vídeo -->
+                <div class="video-upload-progress-box hidden" id="wf-video-upload-progress">
+                  <div class="video-upload-progress-header">
+                    <div class="video-upload-progress-title-row">
+                      <div class="schedule-progress-spinner" style="width: 15px; height: 15px; border-width: 2px;"></div>
+                      <span class="video-upload-progress-title" id="wf-video-progress-title">Enviando vídeo para o estúdio...</span>
+                    </div>
+                    <div class="video-upload-progress-stats-top">
+                      <span id="wf-video-progress-elapsed" class="schedule-progress-elapsed" style="font-size: 11px;">⏱️ 00:00</span>
+                      <span id="wf-video-progress-percent" class="schedule-progress-percent" style="font-size: 13px;">0%</span>
+                    </div>
+                  </div>
+                  
+                  <div class="video-upload-progress-track">
+                    <div id="wf-video-progress-bar" class="video-upload-progress-bar" style="width: 0%;"></div>
+                  </div>
+                  
+                  <div class="video-upload-progress-footer">
+                    <span id="wf-video-progress-bytes" class="video-upload-progress-bytes">0 MB / 0 MB</span>
+                    <span id="wf-video-progress-speed" class="video-upload-progress-speed">Calculando...</span>
+                  </div>
                 </div>
 
                 <div class="file-selected-box hidden" id="wf-video-selected-box">
@@ -1253,7 +1399,7 @@
                       <button type="button" class="button secondary small" id="wf-use-generated-thumb-btn">
                         ✨ Usar Capa Acima (Nano Banana)
                       </button>
-                      <button type="button" class="button ghost small" id="wf-corte-no-thumb-btn" style="color: #6ee7b7; border: 1px dashed rgba(16, 185, 129, 0.4); font-size: 11.5px; padding: 5px 10px;" title="Cortes e Shorts não exigem miniatura. O YouTube usará automaticamente o frame do vídeo.">
+                      <button type="button" class="button ghost small cortes-only-element" id="wf-corte-no-thumb-btn" style="color: #6ee7b7; border: 1px dashed rgba(16, 185, 129, 0.4); font-size: 11.5px; padding: 5px 10px;" title="Cortes e Shorts não exigem miniatura. O YouTube usará automaticamente o frame do vídeo.">
                         ✂️ É um Corte / Short (Ignorar Capa)
                       </button>
                     </div>
@@ -1262,7 +1408,10 @@
                     </button>
                   </div>
                   <div id="wf-thumb-status-msg" class="thumb-status-text" style="margin-top: 6px;"></div>
-                  <small style="display: block; margin-top: 6px; font-size: 11px; color: var(--muted); line-height: 1.4;">
+                  <small id="wf-thumb-tip-long" style="display: block; margin-top: 6px; font-size: 11px; color: var(--muted); line-height: 1.4;">
+                    💡 <strong>Dica de CTR:</strong> Selecione acima uma das capas geradas pelo Nano Banana na Etapa 5 ou anexe sua miniatura 16:9 para máxima retenção e cliques.
+                  </small>
+                  <small id="wf-thumb-tip-short" class="cortes-only-element" style="display: block; margin-top: 6px; font-size: 11px; color: var(--muted); line-height: 1.4;">
                     💡 <strong>Cortes e Shorts:</strong> Não é obrigatório enviar capa! Se você não anexar imagem, o YouTube selecionará automaticamente o frame do vídeo como miniatura padrão.
                   </small>
                 </div>
@@ -1439,6 +1588,7 @@
                 <div style="display: flex; align-items: center; gap: 12px;">
                   <span id="wf-schedule-progress-elapsed" class="schedule-progress-elapsed">⏱️ 00:00</span>
                   <span id="wf-schedule-progress-percent" class="schedule-progress-percent">0%</span>
+                  <button type="button" id="wf-close-progress-card-btn" class="button ghost small hidden" style="padding: 2px 8px; font-size: 11px; color: var(--text-2); border: 1px solid rgba(255,255,255,0.15); border-radius: 4px; cursor: pointer;" title="Fechar aviso de agendamento">✕</button>
                 </div>
               </div>
 
@@ -1514,15 +1664,15 @@
     </div>
 
     <p style="color: var(--text-2); font-size: 13.5px; margin-bottom: 20px;">
-      O Lumen foi projetado para operar com zero atrito. O robô pesquisa tendências, escreve o roteiro longo em espanhol, gera a narração, cria as cenas em alta definição e deixa o vídeo pronto. Você só precisa clicar em <strong>Aprovar</strong>.
+      O estúdio foi projetado para operar com máxima agilidade e qualidade. O sistema auxilia na pesquisa de temas, elaboração de roteiros aprofundados (10.000 caracteres), blocos de narração, geração de prompts visuais cinematográficos e agendamento direto na API do YouTube.
     </p>
 
     <div class="guide-step-card active-ready">
       <div class="guide-step-icon">🤖</div>
       <div class="guide-step-body">
         <h3>1. Motor de IA Configurado <span class="guide-badge-ok">✓ ATIVO</span></h3>
-        <p>O Google Gemini está conectado para escrever os roteiros de 8 a 12 minutos em espanhol da Espanha, títulos chamativos e tags de SEO.</p>
-        <small style="color: var(--muted);">Verificado no menu <strong>Prontidão</strong>.</small>
+        <p>O Google Gemini está conectado para escrever os roteiros completos de 10.000 caracteres, prompts Google Flow, variações Nano Banana e tags de SEO.</p>
+        <small style="color: var(--muted);">Verificado no menu <strong>Configurações</strong>.</small>
       </div>
     </div>
 
@@ -1530,8 +1680,8 @@
       <div class="guide-step-icon">📺</div>
       <div class="guide-step-body">
         <h3>2. Canal do YouTube Autorizado <span class="guide-badge-ok">✓ CONECTADO</span></h3>
-        <p>Acesso ao canal <strong id="guide-youtube-channel-name">@elautoquedura</strong> verificado. A publicação e o agendamento ocorrem de forma 100% direta via API oficial do YouTube.</p>
-        <small style="color: var(--muted);">Verificado no menu <strong>Prontidão</strong>.</small>
+        <p>Acesso ao canal do YouTube verificado. A publicação e o agendamento de vídeos longos e shorts ocorrem de forma 100% direta via API oficial do YouTube Studio.</p>
+        <small style="color: var(--muted);">Verificado no menu <strong>Configurações</strong>.</small>
       </div>
     </div>
 
@@ -1539,7 +1689,7 @@
       <div class="guide-step-icon">🎯</div>
       <div class="guide-step-body">
         <h3>3. Mandato e Estratégia do Canal <span class="guide-badge-ok">✓ EM EXECUÇÃO</span></h3>
-        <p>O operador autônomo está ativo com foco no público da Espanha. Ele pesquisa e cria automaticamente a pauta editorial sem você precisar pensar nos temas.</p>
+        <p>O operador autônomo e o cronograma mantêm o tom de voz e as diretrizes do canal. Planeje novos temas com IA em segundos no Calendário ou Início.</p>
         <small style="color: var(--muted);">Configure as diretrizes no menu <strong>Operador</strong>.</small>
       </div>
     </div>
@@ -1547,14 +1697,14 @@
     <div class="guide-step-card active-ready">
       <div class="guide-step-icon">⏱️</div>
       <div class="guide-step-body">
-        <h3>4. Apenas Aprovação Humana (Fila de Decisão)</h3>
-        <p>Quando um novo vídeo de 8 a 12 minutos é concluído pelo robô, ele aparece diretamente no topo do menu <strong>Início</strong> em <strong>"Prontos para você"</strong>. Você só precisa:</p>
+        <h3>4. Produção e Agendamento</h3>
+        <p>No <strong>Modelador</strong>, você controla cada etapa: Roteiro, Narração, Prompts Visuais, Miniaturas e Envio para o YouTube:</p>
         <ul style="color: var(--text-2); font-size: 13px; margin: 6px 0 10px 18px; padding: 0;">
-          <li>Clicar em <strong>Revisar</strong>;</li>
-          <li>Conferir a minutagem e o horário no fuso da Espanha;</li>
-          <li>Clicar no botão vermelho <strong>Aprovar e agendar</strong> (ou Publicar agora).</li>
+          <li>Acompanhe o cronograma ou crie vídeos novos com 1 clique;</li>
+          <li>Use o <strong>Envio Rápido de Cortes</strong> para Shorts verticais (9:16);</li>
+          <li>Agende lançamentos públicos com data e hora exatas no YouTube Studio.</li>
         </ul>
-        <p style="font-size: 12px; color: var(--green);">💡 Nada é postado no YouTube antes do seu clique de aprovação.</p>
+        <p style="font-size: 12px; color: var(--green);">💡 Nada é postado no YouTube antes da sua confirmação de envio/agendamento.</p>
       </div>
     </div>
 
@@ -1928,13 +2078,14 @@
           </label>
         </div>
 
-        <div style="display: flex; gap: 6px; align-items: center; margin-top: 8px; flex-wrap: nowrap; overflow-x: auto;">
+        <div style="display: flex; gap: 5px; align-items: center; margin-top: 8px; flex-wrap: nowrap; overflow-x: auto;">
           <small style="color: var(--muted); font-size: 11px; white-space: nowrap; flex-shrink: 0;">Mais usados:</small>
-          <button type="button" class="chip-preset-edit-time" data-set-time="10:00" style="padding: 2px 7px; font-size: 11px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05); color: #fff; cursor: pointer; white-space: nowrap; flex-shrink: 0;">10:00</button>
-          <button type="button" class="chip-preset-edit-time" data-set-time="12:00" style="padding: 2px 7px; font-size: 11px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05); color: #fff; cursor: pointer; white-space: nowrap; flex-shrink: 0;">12:00</button>
-          <button type="button" class="chip-preset-edit-time" data-set-time="15:00" style="padding: 2px 7px; font-size: 11px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05); color: #fff; cursor: pointer; white-space: nowrap; flex-shrink: 0;">15:00</button>
-          <button type="button" class="chip-preset-edit-time" data-set-time="18:00" style="padding: 2px 7px; font-size: 11px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05); color: #fff; cursor: pointer; white-space: nowrap; flex-shrink: 0;">18:00</button>
-          <button type="button" class="chip-preset-edit-time" data-set-time="20:30" style="padding: 2px 7px; font-size: 11px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05); color: #fff; cursor: pointer; white-space: nowrap; flex-shrink: 0;">20:30</button>
+          <button type="button" class="chip-preset-edit-time" data-set-time="04:30" style="padding: 2px 6px; font-size: 11px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05); color: #fff; cursor: pointer; white-space: nowrap; flex-shrink: 0;">04:30</button>
+          <button type="button" class="chip-preset-edit-time" data-set-time="07:00" style="padding: 2px 6px; font-size: 11px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05); color: #fff; cursor: pointer; white-space: nowrap; flex-shrink: 0;">07:00</button>
+          <button type="button" class="chip-preset-edit-time" data-set-time="09:30" style="padding: 2px 6px; font-size: 11px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05); color: #fff; cursor: pointer; white-space: nowrap; flex-shrink: 0;">09:30</button>
+          <button type="button" class="chip-preset-edit-time" data-set-time="12:00" style="padding: 2px 6px; font-size: 11px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05); color: #fff; cursor: pointer; white-space: nowrap; flex-shrink: 0;">12:00</button>
+          <button type="button" class="chip-preset-edit-time" data-set-time="14:30" style="padding: 2px 6px; font-size: 11px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05); color: #fff; cursor: pointer; white-space: nowrap; flex-shrink: 0;">14:30</button>
+          <button type="button" class="chip-preset-edit-time" data-set-time="16:00" style="padding: 2px 6px; font-size: 11px; border-radius: 4px; border: 1px solid rgba(239,68,68,0.4); background: rgba(239,68,68,0.15); color: #fca5a5; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0;">16:00</button>
         </div>
 
         <div class="form-actions" style="margin-top: 18px; display: flex; justify-content: flex-end; gap: 8px;">
@@ -1946,7 +2097,7 @@
   </dialog>
 
   <!-- Modal: Questionar Horário de Postagem ao Iniciar Roteiro -->
-  <dialog id="wf-ask-post-time-dialog" class="dialog" style="max-width: 460px;">
+  <dialog id="wf-ask-post-time-dialog" class="dialog" style="max-width: 500px;">
     <div style="padding: 12px 14px;">
       <div class="dialog-heading">
         <div>
@@ -1965,17 +2116,18 @@
 
         <label class="full-row" style="margin-top: 10px;">
           <span style="font-size: 12.5px; font-weight: 600;">Selecione o horário desejado (fuso local):</span>
-          <input type="time" id="wf-ask-time-input" required value="18:00" style="font-size: 18px; font-weight: 700; text-align: center; padding: 10px; border-radius: 8px; width: 100%; letter-spacing: 1px;">
+          <input type="time" id="wf-ask-time-input" required value="16:00" style="font-size: 18px; font-weight: 700; text-align: center; padding: 10px; border-radius: 8px; width: 100%; letter-spacing: 1px;">
         </label>
 
-        <!-- Atalhos Rápidos -->
-        <div style="display: flex; gap: 6px; align-items: center; margin-top: 10px; flex-wrap: nowrap; overflow-x: auto;">
-          <small style="color: var(--muted); font-size: 11.5px; white-space: nowrap; flex-shrink: 0;">Mais usados:</small>
-          <button type="button" class="chip-preset-ask-time" data-set-time="10:00" style="padding: 3px 8px; font-size: 11.5px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05); color: #fff; cursor: pointer; white-space: nowrap; flex-shrink: 0;">10:00</button>
-          <button type="button" class="chip-preset-ask-time" data-set-time="12:00" style="padding: 3px 8px; font-size: 11.5px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05); color: #fff; cursor: pointer; white-space: nowrap; flex-shrink: 0;">12:00</button>
-          <button type="button" class="chip-preset-ask-time" data-set-time="15:00" style="padding: 3px 8px; font-size: 11.5px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05); color: #fff; cursor: pointer; white-space: nowrap; flex-shrink: 0;">15:00</button>
-          <button type="button" class="chip-preset-ask-time" data-set-time="18:00" style="padding: 3px 8px; font-size: 11.5px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05); color: #fff; cursor: pointer; white-space: nowrap; flex-shrink: 0;">18:00</button>
-          <button type="button" class="chip-preset-ask-time" data-set-time="20:30" style="padding: 3px 8px; font-size: 11.5px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05); color: #fff; cursor: pointer; white-space: nowrap; flex-shrink: 0;">20:30</button>
+        <!-- Atalhos Rápidos com os 6 horários oficiais do canal -->
+        <div style="display: flex; gap: 5px; align-items: center; margin-top: 10px; flex-wrap: nowrap; overflow-x: auto; padding-bottom: 2px;">
+          <small style="color: var(--muted); font-size: 11px; white-space: nowrap; flex-shrink: 0;">Mais usados:</small>
+          <button type="button" class="chip-preset-ask-time" data-set-time="04:30" style="padding: 3px 7px; font-size: 11px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05); color: #fff; cursor: pointer; white-space: nowrap; flex-shrink: 0;" title="Short 1">04:30</button>
+          <button type="button" class="chip-preset-ask-time" data-set-time="07:00" style="padding: 3px 7px; font-size: 11px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05); color: #fff; cursor: pointer; white-space: nowrap; flex-shrink: 0;" title="Short 2">07:00</button>
+          <button type="button" class="chip-preset-ask-time" data-set-time="09:30" style="padding: 3px 7px; font-size: 11px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05); color: #fff; cursor: pointer; white-space: nowrap; flex-shrink: 0;" title="Short 3">09:30</button>
+          <button type="button" class="chip-preset-ask-time" data-set-time="12:00" style="padding: 3px 7px; font-size: 11px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05); color: #fff; cursor: pointer; white-space: nowrap; flex-shrink: 0;" title="Short 4">12:00</button>
+          <button type="button" class="chip-preset-ask-time" data-set-time="14:30" style="padding: 3px 7px; font-size: 11px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05); color: #fff; cursor: pointer; white-space: nowrap; flex-shrink: 0;" title="Short 5">14:30</button>
+          <button type="button" class="chip-preset-ask-time" data-set-time="16:00" style="padding: 3px 7px; font-size: 11px; border-radius: 5px; border: 1px solid rgba(239,68,68,0.4); background: rgba(239,68,68,0.15); color: #fca5a5; font-weight: 700; cursor: pointer; white-space: nowrap; flex-shrink: 0;" title="Vídeo Longo Oficial">16:00</button>
         </div>
 
         <div style="margin-top: 12px; padding: 8px 10px; background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.25); border-radius: 6px; font-size: 11.5px; color: #a7f3d0; display: flex; align-items: center; gap: 6px;">
@@ -2287,7 +2439,7 @@ Data e Hora: 08/11/2026 04:30"></textarea>
     </div>
   </dialog>
 
-  <script src="/app.js?v=20261030_04" defer></script>
-  <script src="/enhance.js?v=20261030_04" defer></script>
+  <script src="/app.js?v=20261031_15" defer></script>
+  <script src="/enhance.js?v=20261030_08" defer></script>
 </body>
 </html>

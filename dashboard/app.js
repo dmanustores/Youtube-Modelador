@@ -5,7 +5,8 @@ const ui = {
   toastTimer: null,
   retentionSnapshotId: null,
   engagementVideoId: null,
-  engagementDetail: null
+  engagementDetail: null,
+  engagementOnlyWithComments: localStorage.getItem('yaa_engagement_only_comments') === 'true'
 };
 
 const $ = selector => document.querySelector(selector);
@@ -333,6 +334,36 @@ async function refreshDashboard(silent = false) {
   if (!silent) $('#loading').classList.add('active');
   try {
     ui.state = await api('/api/dashboard');
+    // Deduplicação defensiva no carregamento do estado para garantir que títulos repetidos nunca fiquem na memória
+    if (Array.isArray(ui.state?.schedule)) {
+      const seenTitles = new Map();
+      const dedupedSchedule = [];
+      for (const item of ui.state.schedule) {
+        const rawTitle = item.title || item.topic || '';
+        const norm = cleanTitlePrefix(rawTitle).trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ');
+        if (!norm) {
+          dedupedSchedule.push(item);
+          continue;
+        }
+        if (!seenTitles.has(norm)) {
+          seenTitles.set(norm, item);
+          dedupedSchedule.push(item);
+        } else {
+          // Se já existe, mas o item atual tem YouTube URL e o salvo não tinha, prioriza o que tem YouTube URL
+          const existing = seenTitles.get(norm);
+          const hasYt = Boolean(item.youtube_url || item.youtubeUrl);
+          const existingHasYt = Boolean(existing.youtube_url || existing.youtubeUrl);
+          if (hasYt && !existingHasYt) {
+            const idx = dedupedSchedule.indexOf(existing);
+            if (idx !== -1) {
+              dedupedSchedule[idx] = item;
+              seenTitles.set(norm, item);
+            }
+          }
+        }
+      }
+      ui.state.schedule = dedupedSchedule;
+    }
     renderDashboard();
     if (!silent) {
       showToast('Pipeline e painel atualizados com sucesso!', 'success');
@@ -1210,6 +1241,27 @@ function filterScheduleByPeriod(schedule = [], period = '30', format = 'all') {
     filtered = filtered.filter(item => isItemShort(item));
   }
 
+  // Deduplicação estrita por título para garantir que NUNCA apareçam títulos duplicados no calendário
+  const seenTitles = new Map();
+  for (const item of filtered) {
+    const rawTitle = item.title || item.topic || '';
+    const normTitle = cleanTitlePrefix(rawTitle).trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ');
+    if (!normTitle) continue;
+
+    if (!seenTitles.has(normTitle)) {
+      seenTitles.set(normTitle, item);
+    } else {
+      // Se já temos um item com esse título, priorizar o que tem URL do YouTube ativa
+      const current = seenTitles.get(normTitle);
+      const itemHasYt = Boolean(item.youtube_url || item.youtubeUrl);
+      const curHasYt = Boolean(current.youtube_url || current.youtubeUrl);
+      if (itemHasYt && !curHasYt) {
+        seenTitles.set(normTitle, item);
+      }
+    }
+  }
+  filtered = Array.from(seenTitles.values());
+
   // Ordenar cronologicamente (mais próximo primeiro)
   filtered.sort((a, b) => {
     const ta = new Date(a.publish_time || a.publishTime).getTime();
@@ -1276,6 +1328,21 @@ function renderCalendar(schedule = []) {
           ? '<span style="font-size: 10.5px; padding: 2px 6px; background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 4px; font-weight: 600;">📱 Short</span>'
           : '<span style="font-size: 10.5px; padding: 2px 6px; background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3); border-radius: 4px; font-weight: 600;">🎬 Vídeo</span>';
 
+        const meta = typeof item.metadata === 'string' ? JSON.parse(item.metadata || '{}') : (item.metadata || {});
+        const isProcessing = meta.processingStatus === 'processing' || (meta.uploadStatus === 'uploaded' && meta.processingStatus !== 'succeeded');
+        const hasFailed = item.status === 'failed' || meta.uploadStatus === 'failed' || meta.processingStatus === 'failed';
+
+        let liveBadge = '';
+        if (isLive) {
+          if (isProcessing) {
+            liveBadge = '<span>·</span><span style="color: #fbbf24; font-size: 11px; font-weight: 600;" title="O vídeo está em processamento de vídeo/áudio no YouTube">⏳ Em Processamento no YouTube</span>';
+          } else if (hasFailed) {
+            liveBadge = '<span>·</span><span style="color: #ef4444; font-size: 11px; font-weight: 600;">⚠️ Falha no YouTube</span>';
+          } else {
+            liveBadge = '<span>·</span><span style="color: var(--green); font-size: 11px; font-weight: 600;">✓ No YouTube</span>';
+          }
+        }
+
         return `
         <div class="timeline-item" style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; margin-bottom: 8px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius);">
           <div style="display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0;">
@@ -1292,11 +1359,17 @@ function renderCalendar(schedule = []) {
                 <span>📅 ${formatDate(publishDate)}</span>
                 <span>·</span>
                 <span>${statusChip(item.status)}</span>
-                ${isLive ? '<span>·</span><span style="color: var(--green); font-size: 11px; font-weight: 600;">✓ No YouTube</span>' : ''}
+                ${liveBadge}
               </div>
             </div>
           </div>
-          <div style="display: flex; gap: 8px; align-items: center; flex-shrink: 0;">
+          <div style="display: flex; gap: 8px; align-items: center; flex-shrink: 0; flex-wrap: wrap;">
+            ${!isLive || hasFailed || isProcessing
+              ? `<button type="button" class="button secondary small cal-reupload-btn" data-schedule-id="${escapeHTML(item.id)}" data-video-title="${escapeHTML(cleanTitle)}" style="font-size: 11.5px; padding: 4px 10px; color: ${isProcessing ? '#fbbf24' : '#f59e0b'}; border-color: ${isProcessing ? 'rgba(251, 191, 36, 0.45)' : 'rgba(245, 158, 11, 0.4)'}; background: ${isProcessing ? 'rgba(251, 191, 36, 0.08)' : 'transparent'}; display: inline-flex; align-items: center; gap: 4px;" title="${isProcessing ? 'Se o processamento do YouTube congelar por oscilação de rede, clique aqui para reenviar o arquivo com segurança' : 'Enviar vídeo pendente ao YouTube'}">
+                   🔄 Reenviar Vídeo
+                 </button>`
+              : ''
+            }
             ${youtubeUrl 
               ? `<a href="${escapeHTML(youtubeUrl)}" target="_blank" rel="noopener noreferrer" class="button secondary small" style="text-decoration: none; font-size: 11.5px; padding: 4px 10px;">Assistir ↗</a>` 
               : ''
@@ -1345,12 +1418,173 @@ async function syncCalendarFromYouTube() {
 }
 window.syncCalendarFromYouTube = syncCalendarFromYouTube;
 
+// =========================================================================
+// FLUXO DE REENVIO / SUBSTITUIÇÃO DE VÍDEO NO YOUTUBE
+// =========================================================================
+async function startReuploadFlow(identifier) {
+  if (!identifier) return;
+  showToast('Carregando dados salvos para reenvio...', 'info');
+  $('#loading')?.classList.add('active');
+  try {
+    const res = await fetch(`/api/workflow/reupload-prep/${encodeURIComponent(identifier)}`);
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Não foi possível carregar os dados para reenvio');
+    }
+
+    if (ui.currentView !== 'workflow') {
+      switchView('workflow');
+    }
+
+    if (data.themeId) {
+      wfState.currentThemeId = data.themeId;
+      if (Array.isArray(wfPlannedThemes)) {
+        const found = wfPlannedThemes.find(t => t.id === data.themeId);
+        if (found) wfState.currentTheme = found;
+      }
+    }
+
+    wfState.resendMode = {
+      active: true,
+      replaceVideoId: data.previousYoutubeId,
+      themeId: data.themeId,
+      scheduleId: data.scheduleId
+    };
+
+    if (titleInput) {
+      titleInput.value = data.title || '';
+      updateTitleCharCounter();
+    }
+    if (descInput) {
+      descInput.value = formatYouTubeDescriptionSpacing(data.description || '');
+      updateDescCharCounter();
+    }
+    const tagsInp = $('#wf-upload-tags');
+    if (tagsInp) {
+      tagsInp.value = Array.isArray(data.tags) ? data.tags.join(', ') : (data.tags || '');
+    }
+
+    const timeInp = $('#wf-upload-time');
+    if (timeInp && data.publishDate) {
+      const timePart = data.publishTime || '16:00';
+      timeInp.value = `${data.publishDate}T${timePart}`;
+    }
+
+    if (data.thumbnailPath) {
+      const thumbPathInput = $('#wf-upload-thumbnail-path');
+      if (thumbPathInput) thumbPathInput.value = data.thumbnailPath;
+      const thumbPlaceholder = $('#wf-thumb-placeholder');
+      const thumbImgPreview = $('#wf-thumb-img-preview');
+      const removeThumbBtn = $('#wf-remove-thumb-btn');
+      const thumbStatusMsg = $('#wf-thumb-status-msg');
+      if (thumbPlaceholder) thumbPlaceholder.classList.add('hidden');
+      if (thumbImgPreview) {
+        thumbImgPreview.classList.remove('hidden');
+        const thumbName = data.thumbnailPath.split(/[\/\\]/).pop();
+        thumbImgPreview.src = `/uploads/thumbnails/${thumbName}`;
+      }
+      removeThumbBtn?.classList.remove('hidden');
+      if (thumbStatusMsg) {
+        const thumbName = data.thumbnailPath.split(/[\/\\]/).pop();
+        thumbStatusMsg.innerHTML = `<div style="color: #6ee7b7; font-size: 11.5px; margin-top: 4px;">✓ Miniatura oficial vinculada: <strong>${escapeHTML(thumbName)}</strong></div>`;
+      }
+    }
+
+    if (data.videoPath) {
+      if (uploadPathInput) uploadPathInput.value = data.videoPath;
+      const fileName = data.videoPath.split(/[\/\\]/).pop();
+      if (videoNameLabel) videoNameLabel.textContent = fileName;
+      if (videoSizeLabel) videoSizeLabel.textContent = 'Arquivo no disco pronto para reenvio';
+      videoDropContent?.classList.add('hidden');
+      videoSelectedBox?.classList.remove('hidden');
+    }
+
+    let resendBanner = $('#wf-resend-mode-banner');
+    if (!resendBanner) {
+      resendBanner = document.createElement('div');
+      resendBanner.id = 'wf-resend-mode-banner';
+      const form = $('#wf-schedule-form');
+      if (form) form.insertBefore(resendBanner, form.firstChild);
+    }
+    if (resendBanner) {
+      resendBanner.style.display = 'flex';
+      resendBanner.style.alignItems = 'center';
+      resendBanner.style.justifyContent = 'space-between';
+      resendBanner.style.gap = '12px';
+      resendBanner.style.background = 'rgba(245, 158, 11, 0.12)';
+      resendBanner.style.border = '1px solid rgba(245, 158, 11, 0.4)';
+      resendBanner.style.borderRadius = '8px';
+      resendBanner.style.padding = '12px 16px';
+      resendBanner.style.marginBottom = '16px';
+      resendBanner.innerHTML = `
+        <div>
+          <strong style="color: #fbbf24; font-size: 13.5px; display: block;">🔁 Modo de Reenvio / Substituição Ativo</strong>
+          <span style="color: var(--text-2); font-size: 12px;">Metadados e capa de <strong>${escapeHTML(data.title)}</strong> (Data: ${escapeHTML(data.publishDate)} às ${escapeHTML(data.publishTime)}) carregados. Para retransmitir o arquivo de vídeo ao YouTube, confirme no botão abaixo. Se quiser usar outro arquivo .mp4, clique em "Remover" e aponte o novo arquivo.</span>
+        </div>
+        <button type="button" class="button ghost small" onclick="cancelResendMode()" style="flex-shrink: 0; font-size: 11px;">Cancelar</button>
+      `;
+    }
+
+    const submitBtn = $('#wf-schedule-form')?.querySelector('button[type="submit"]');
+    if (submitBtn) {
+      submitBtn.textContent = '🚀 Confirmar Reenvio ao YouTube Oficial (Substituir Incompleto)';
+      submitBtn.style.background = 'linear-gradient(135deg, #d97706, #b45309)';
+      submitBtn.style.boxShadow = '0 0 16px rgba(217, 119, 6, 0.5)';
+    }
+
+    expandMetadataFields();
+    renderWorkflowActiveThemeCard();
+    updateWorkflowTopTimeline();
+    const step7 = $('#wf-step-8-panel') || $('#wf-schedule-form');
+    step7?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+    showToast('✓ Dados do vídeo carregados! Confirme o arquivo .mp4 e clique em Confirmar Reenvio.', 'success');
+  } catch (err) {
+    showToast(`Erro ao preparar reenvio: ${err.message}`, 'error');
+  } finally {
+    $('#loading')?.classList.remove('active');
+  }
+}
+window.startReuploadFlow = startReuploadFlow;
+
+function cancelResendMode() {
+  wfState.resendMode = null;
+  const resendBanner = $('#wf-resend-mode-banner');
+  if (resendBanner) resendBanner.remove();
+  const submitBtn = $('#wf-schedule-form')?.querySelector('button[type="submit"]');
+  if (submitBtn) {
+    submitBtn.textContent = '📅 Agendar Lançamento PÚBLICO no YouTube Oficial';
+    submitBtn.style.background = '';
+    submitBtn.style.boxShadow = '';
+  }
+  showToast('Modo de reenvio cancelado.', 'info');
+}
+window.cancelResendMode = cancelResendMode;
+
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.cal-reupload-btn');
+  if (btn) {
+    const schedId = btn.dataset.scheduleId;
+    startReuploadFlow(schedId);
+  }
+});
+
 function renderCalendarPlannedThemes() {
   const container = $('#calendar-planned-themes-list');
   const countBadge = $('#cal-themes-badge');
   if (!container) return;
 
-  const themes = Array.isArray(wfPlannedThemes) ? wfPlannedThemes : [];
+  const rawThemes = Array.isArray(wfPlannedThemes) ? wfPlannedThemes : [];
+  const seenThemeTopics = new Set();
+  const themes = [];
+  for (const t of rawThemes) {
+    const norm = (t.topic || '').trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ');
+    if (!norm) continue;
+    if (!seenThemeTopics.has(norm)) {
+      seenThemeTopics.add(norm);
+      themes.push(t);
+    }
+  }
   if (countBadge) {
     countBadge.textContent = `${themes.length} tema${themes.length === 1 ? '' : 's'}`;
   }
@@ -1652,21 +1886,52 @@ function renderEngagement(engagement = {}) {
 
   const insights = Array.isArray(engagement.insights) ? engagement.insights : [];
   const select = $('#engagement-video-select');
-  if (!insights.length) {
+  const filterCheckbox = $('#engagement-filter-has-comments');
+  const filterCount = $('#engagement-filter-count');
+
+  if (filterCheckbox) {
+    filterCheckbox.checked = Boolean(ui.engagementOnlyWithComments);
+  }
+
+  const withCommentsCount = insights.filter(item => (Number(item.commentCount) || 0) > 0).length;
+  if (filterCount) {
+    filterCount.textContent = `${insights.length} vídeos (${withCommentsCount} com comentários)`;
+  }
+
+  const visibleInsights = ui.engagementOnlyWithComments
+    ? insights.filter(item => (Number(item.commentCount) || 0) > 0)
+    : insights;
+
+  if (!visibleInsights.length) {
     ui.engagementVideoId = null;
     ui.engagementDetail = null;
-    select.innerHTML = '<option value="">Nenhum vídeo sincronizado ainda</option>';
     select.disabled = true;
     $('#engagement-sync-button').disabled = true;
     $('#engagement-draft-button').disabled = true;
     $('#engagement-meta').innerHTML = '';
-    $('#engagement-themes').innerHTML = empty('Os comentários aparecem após a sincronização de um vídeo publicado.');
+    const commentsList = $('#engagement-comments-list');
+    if (commentsList) commentsList.innerHTML = '';
+
+    if (ui.engagementOnlyWithComments && insights.length > 0) {
+      select.innerHTML = '<option value="">Nenhum vídeo com comentários ainda</option>';
+      $('#engagement-themes').innerHTML = empty('Nenhum vídeo possui comentários no momento. Desmarque "Ocultar vídeos sem comentários" para ver todos os vídeos.');
+    } else {
+      select.innerHTML = '<option value="">Nenhum vídeo sincronizado ainda</option>';
+      $('#engagement-themes').innerHTML = empty('Os comentários aparecem após a sincronização de um vídeo publicado.');
+    }
     $('#engagement-drafts').innerHTML = empty('Gere rascunhos de resposta para revisá-los aqui.');
     $('#engagement-attention').innerHTML = empty('Nenhum comentário sinalizado como spam, golpe ou ofensivo.');
   } else {
-    if (!insights.some(item => item.videoId === ui.engagementVideoId)) ui.engagementVideoId = insights[0].videoId;
+    const hasCurrentWithComments = visibleInsights.some(item => item.videoId === ui.engagementVideoId && (Number(item.commentCount) || 0) > 0);
+    if (!visibleInsights.some(item => item.videoId === ui.engagementVideoId) || (!hasCurrentWithComments && (Number(visibleInsights[0].commentCount) || 0) > 0)) {
+      ui.engagementVideoId = visibleInsights[0].videoId;
+    }
     select.disabled = false;
-    select.innerHTML = insights.map(item => `<option value="${escapeHTML(item.videoId)}" ${item.videoId === ui.engagementVideoId ? 'selected' : ''}>${escapeHTML(item.title || item.videoId)}</option>`).join('');
+    select.innerHTML = visibleInsights.map(item => {
+      const count = Number(item.commentCount || 0);
+      const badge = count > 0 ? `💬 (${count})` : `(0)`;
+      return `<option value="${escapeHTML(item.videoId)}" ${item.videoId === ui.engagementVideoId ? 'selected' : ''}>${badge} ${escapeHTML(item.title || item.videoId)}</option>`;
+    }).join('');
     $('#engagement-sync-button').disabled = false;
     $('#engagement-sync-button').dataset.videoId = ui.engagementVideoId;
     $('#engagement-draft-button').disabled = false;
@@ -1734,6 +1999,50 @@ function renderEngagementDetail() {
       <a class="text-button" href="${escapeHTML(flag.permalink || '#')}" target="_blank" rel="noopener noreferrer">Abrir no YouTube</a>
     </article>`;
   }).join('') : empty('Nenhum comentário sinalizado como spam, golpe ou ofensivo.');
+
+  // Lista todos os comentários reais encontrados
+  const allComments = Array.isArray(detail.comments) ? detail.comments : [];
+  const commentsListContainer = $('#engagement-comments-list');
+  if (commentsListContainer) {
+    if (allComments.length) {
+      commentsListContainer.innerHTML = `
+        <div style="margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line);">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+            <strong style="font-size: 13px; color: var(--text); display: flex; align-items: center; gap: 6px;">
+              💬 Comentários recebidos no YouTube (${allComments.length})
+            </strong>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 8px;">
+            ${allComments.map(comment => {
+              const isOwner = Boolean(comment.isChannelOwner);
+              const authorBadge = isOwner
+                ? '<span style="font-size: 10px; padding: 2px 6px; background: rgba(61, 220, 151, .15); color: var(--green); border-radius: 4px; font-weight: 600;">Canal</span>'
+                : '';
+              const flags = Array.isArray(comment.flags) ? comment.flags : [];
+              const flagBadges = flags.map(f => `<span style="font-size: 10px; padding: 2px 6px; background: rgba(255, 77, 94, .12); color: var(--red); border-radius: 4px;">${escapeHTML(f)}</span>`).join(' ');
+              const dateText = comment.publishedAt ? formatDate(comment.publishedAt) : '';
+
+              return `
+                <article class="comment-card" style="padding: 10px 12px; margin: 0; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-sm);">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                      <strong style="font-size: 12.5px; color: var(--text);">${escapeHTML(comment.authorName || 'Espectador')}</strong>
+                      ${authorBadge}
+                      ${flagBadges}
+                    </div>
+                    <span style="font-size: 11px; color: var(--muted);">${escapeHTML(dateText)}</span>
+                  </div>
+                  <p class="comment-original" style="font-size: 13px; color: var(--text-2); margin: 4px 0 0; line-height: 1.4;">${escapeHTML(comment.text || '')}</p>
+                </article>
+              `;
+            }).join('')}
+          </div>
+        </div>
+      `;
+    } else {
+      commentsListContainer.innerHTML = '';
+    }
+  }
 }
 
 async function loadEngagementDetail(videoId) {
@@ -1986,7 +2295,7 @@ function switchView(view) {
   $$('.view').forEach(item => item.classList.toggle('active', item.id === `${view}-view`));
   const titles = {
     overview: ['VISÃO GERAL DO OPERADOR', 'Saiba o que acontece a seguir.'],
-    workflow: ['YOUTUBE · MODELADOR', 'Youtube - Modelador'],
+    workflow: ['YOUTUBE · MODELADOR', 'Estúdio de Produção'],
     operator: ['DNA & ESTRATÉGIA DO CANAL', 'A IA lê os dados reais do seu canal e você define o perfil editorial.'],
     pipeline: ['OPERAÇÕES DE CONTEÚDO', 'Da ideia à publicação.'],
     calendar: ['PLANEJAMENTO EDITORIAL', 'Planeje antes de gerar.'],
@@ -2004,11 +2313,25 @@ function switchView(view) {
   }
   window.scrollTo({ top: 0, behavior: 'smooth' });
   if (view === 'workflow') {
+    // 🛡️ Remove duplicidade: no Modelador, oculta o botão redundante 'Youtube - Modelador'
+    $('#generate-button')?.classList.add('hidden');
+    if (typeof updateCortesTopButtonText === 'function') {
+      updateCortesTopButtonText();
+    }
+    if (typeof updateWorkflowTopTimeline === 'function') {
+      updateWorkflowTopTimeline();
+    }
     if (typeof loadWorkflowPlannedThemes === 'function') {
       loadWorkflowPlannedThemes();
     }
     if (typeof restoreWorkflowDraft === 'function') {
       restoreWorkflowDraft();
+    }
+  } else {
+    $('#generate-button')?.classList.remove('hidden');
+    $('#wf-topbar-steps-timeline')?.classList.add('hidden');
+    if (typeof updateCortesTopButtonText === 'function') {
+      updateCortesTopButtonText();
     }
   }
   if (view === 'calendar') {
@@ -3475,6 +3798,11 @@ document.addEventListener('change', event => {
     ui.engagementDetail = null;
     renderEngagement(ui.state?.engagement || {});
   }
+  if (event.target.matches('#engagement-filter-has-comments')) {
+    ui.engagementOnlyWithComments = Boolean(event.target.checked);
+    localStorage.setItem('yaa_engagement_only_comments', String(event.target.checked));
+    renderEngagement(ui.state?.engagement || {});
+  }
   if (event.target.matches('[name="selectedTitleVariant"]')) {
     const title = event.target.selectedOptions[0]?.dataset.title;
     const input = $('#content-review-form [name="title"]');
@@ -4032,6 +4360,16 @@ async function saveWorkflowDraft(showToastNotice = false) {
 
     const themeId = wfState.currentThemeId || draft.activeThemeId;
 
+    // BLINDAGEM MÁXIMA ANTI-REGRESSÃO:
+    // Se o tema ativo já foi postado no YouTube ou possui link publicado,
+    // ele NUNCA deve ser sobrescrito como 'in_production' nem reter rascunho!
+    const currentT = (Array.isArray(wfPlannedThemes) ? wfPlannedThemes : []).find(t => 
+      (themeId && t.id === themeId) || (draft.topic && t.topic && t.topic.trim().toLowerCase() === draft.topic.trim().toLowerCase())
+    );
+    if (currentT && (currentT.status === 'posted' || currentT.published_url)) {
+      return;
+    }
+
     // 1. Persistência Imediata Offline-First no localStorage (global e por tema)
     try {
       localStorage.setItem(WF_DRAFT_STORAGE_KEY, JSON.stringify(draft));
@@ -4147,26 +4485,60 @@ async function restoreWorkflowDraft(force = false) {
   wfDraftIsRestored = true;
 
   try {
-    // 1. Tentar ler do localStorage primeiro (mais rápido e resiliente)
-    let draft = null;
+    let localDraft = null;
     try {
       const rawLocal = localStorage.getItem(WF_DRAFT_STORAGE_KEY);
-      if (rawLocal) draft = JSON.parse(rawLocal);
+      if (rawLocal) localDraft = JSON.parse(rawLocal);
     } catch (_e) {}
 
-    // 2. Se não encontrou no localStorage, consultar a API
-    if (!draft || !hasDraftContent(draft)) {
-      try {
-        const res = await api('/api/workflow/draft');
-        if (res?.success && res.draft && hasDraftContent(res.draft)) {
-          draft = res.draft;
-        }
-      } catch (_apiErr) {
-        console.info('Não foi possível obter rascunho do servidor no momento:', _apiErr?.message);
+    let serverDraft = null;
+    try {
+      const res = await api('/api/workflow/draft');
+      if (res?.success && res.draft && hasDraftContent(res.draft)) {
+        serverDraft = res.draft;
       }
+    } catch (_apiErr) {
+      console.info('Não foi possível obter rascunho do servidor no momento:', _apiErr?.message);
+    }
+
+    let draft = null;
+    if (serverDraft && localDraft) {
+      const serverTime = new Date(serverDraft.savedAt || 0).getTime();
+      const localTime = new Date(localDraft.savedAt || 0).getTime();
+      draft = serverTime >= localTime ? serverDraft : localDraft;
+    } else {
+      draft = serverDraft || localDraft;
     }
 
     if (!draft || !hasDraftContent(draft)) {
+      return false;
+    }
+
+    // BLINDAGEM MÁXIMA ANTI-SUJEIRA:
+    // Se o rascunho salvo pertence a um tema que JÁ FOI POSTADO no YouTube (por ID ou por Título),
+    // ele NUNCA deve ser restaurado! Descarta-o imediatamente e limpa o estúdio!
+    const targetThemeId = draft.currentThemeId || draft.activeThemeId || localStorage.getItem('wf_last_active_theme_id');
+    const draftTopic = (draft.topic || '').trim().toLowerCase();
+    
+    const matchedPostedTheme = (Array.isArray(wfPlannedThemes) ? wfPlannedThemes : []).find(t => {
+      const matchId = targetThemeId && t.id === targetThemeId;
+      const matchTopic = draftTopic && t.topic && (t.topic.trim().toLowerCase() === draftTopic || draftTopic.includes(t.topic.trim().toLowerCase()) || t.topic.trim().toLowerCase().includes(draftTopic));
+      return (matchId || matchTopic) && (t.status === 'posted' || t.published_url);
+    });
+
+    if (matchedPostedTheme) {
+      console.info('Rascunho descartado: pertence a um vídeo já postado no YouTube:', matchedPostedTheme.topic);
+      clearWorkflowDraft(false);
+      hideDraftRecoveryBanner();
+      try {
+        localStorage.removeItem('wf_last_active_theme_id');
+        localStorage.removeItem(WF_DRAFT_STORAGE_KEY);
+        if (targetThemeId) localStorage.removeItem(`wf_draft_theme_${targetThemeId}`);
+        if (matchedPostedTheme.id) localStorage.removeItem(`wf_draft_theme_${matchedPostedTheme.id}`);
+      } catch (_) {}
+      resetWorkflowStudio({ keepFieldA: true, preserveTopic: '', preserveLog: false, notify: false });
+      renderWorkflowActiveThemeCard();
+      renderActiveProductionsBar();
       return false;
     }
 
@@ -4331,10 +4703,24 @@ async function restoreWorkflowDraft(force = false) {
     // Vincular e restaurar tema ativo se houver
     const restoredThemeId = draft.currentThemeId || draft.activeThemeId || localStorage.getItem('wf_last_active_theme_id');
     if (restoredThemeId) {
-      wfState.currentThemeId = restoredThemeId;
       if (Array.isArray(wfPlannedThemes)) {
         const found = wfPlannedThemes.find(t => t.id === restoredThemeId);
         if (found) {
+          // Se o tema já foi postado no YouTube, descarta o rascunho residual dele e limpa 100% o estúdio
+          if (found.status === 'posted' || found.published_url) {
+            clearWorkflowDraft(false);
+            hideDraftRecoveryBanner();
+            try {
+              localStorage.removeItem('wf_last_active_theme_id');
+              localStorage.removeItem(WF_DRAFT_STORAGE_KEY);
+              if (restoredThemeId) localStorage.removeItem(`wf_draft_theme_${restoredThemeId}`);
+            } catch (_) {}
+            resetWorkflowStudio({ keepFieldA: true, preserveTopic: '', preserveLog: false, notify: false });
+            renderWorkflowActiveThemeCard();
+            renderActiveProductionsBar();
+            return false;
+          }
+          wfState.currentThemeId = restoredThemeId;
           wfState.currentTheme = found;
           wfState.scheduledDate = found.scheduled_date || null;
           wfState.scheduledTime = found.scheduled_time || null;
@@ -4456,13 +4842,26 @@ function attachWorkflowAutoSaveListeners() {
  * e o cronograma de temas.
  */
 /**
- * Oculta e limpa completamente o banner verde de status do agendamento
+ * Oculta e limpa completamente o banner verde de status do agendamento e o card de progresso
  */
 function hideScheduleStatusBanner() {
   const banner = $('#wf-schedule-status');
   if (banner) {
     banner.classList.add('hidden');
     banner.innerHTML = '';
+  }
+  const progressCard = $('#wf-schedule-progress-card');
+  if (progressCard) {
+    if (typeof scheduleProgressTracker !== 'undefined' && scheduleProgressTracker?.autoDismissTimer) {
+      clearTimeout(scheduleProgressTracker.autoDismissTimer);
+      scheduleProgressTracker.autoDismissTimer = null;
+    }
+    progressCard.classList.add('hidden');
+    progressCard.classList.remove('completed', 'error');
+    progressCard.style.opacity = '';
+    progressCard.style.transform = '';
+    const closeBtn = $('#wf-close-progress-card-btn');
+    if (closeBtn) closeBtn.classList.add('hidden');
   }
 }
 
@@ -4478,6 +4877,12 @@ function resetPasteModal() {
   const pasteTimeStat = $('#wf-paste-time-status');
   const quickTopic = $('#wf-gen-quick-topic');
   const pasteTime = $('#wf-paste-out-time');
+  const clipBtn = $('#wf-paste-from-clipboard-btn');
+
+  if (clipBtn) {
+    clipBtn.disabled = false;
+    clipBtn.innerHTML = '📋 Colar do Clipboard';
+  }
 
   if (pasteRaw) pasteRaw.value = '';
   if (pasteTitle) pasteTitle.value = '';
@@ -4543,6 +4948,7 @@ function clearDownstreamProductionData({ preserveLog = false } = {}) {
   if (videoFileInput) videoFileInput.value = '';
   if (uploadPathInput) uploadPathInput.value = '';
   $('#wf-video-selected-box')?.classList.add('hidden');
+  $('#wf-video-upload-progress')?.classList.add('hidden');
   $('#wf-video-drop-content')?.classList.remove('hidden');
 
   const thumbFileInput = $('#wf-thumb-file-input');
@@ -4855,24 +5261,51 @@ async function loadWorkflowPlannedThemes() {
       if (wfState.currentThemeId) {
         const found = wfPlannedThemes.find(t => t.id === wfState.currentThemeId);
         if (found) {
-          wfState.currentTheme = found;
-          wfState.scheduledDate = found.scheduled_date || null;
-          wfState.scheduledTime = found.scheduled_time || null;
-          renderWorkflowActiveThemeCard();
+          if (found.status === 'posted' || found.published_url) {
+            // Se o tema já foi postado, desvincula e garante que o estúdio fique 100% limpo
+            wfState.currentThemeId = null;
+            wfState.currentTheme = null;
+            try {
+              localStorage.removeItem('wf_last_active_theme_id');
+              localStorage.removeItem(`wf_draft_theme_${found.id}`);
+            } catch (_) {}
+            resetWorkflowStudio({ keepFieldA: true, preserveTopic: '', preserveLog: true, notify: false });
+          } else {
+            wfState.currentTheme = found;
+            wfState.scheduledDate = found.scheduled_date || null;
+            wfState.scheduledTime = found.scheduled_time || null;
+            const topicInput = $('#wf-script-topic');
+            if (topicInput && !topicInput.value.trim() && found.topic) {
+              topicInput.value = found.topic;
+            }
+            const angleInput = $('#wf-script-angle');
+            if (angleInput && !angleInput.value.trim() && found.hook_angle) {
+              angleInput.value = found.hook_angle;
+            }
+            renderWorkflowActiveThemeCard();
+          }
         }
       } else {
-        // Se o estúdio ainda não tem tema carregado, restaura automaticamente o tema ativo EM PRODUÇÃO
+        // Se o estúdio ainda não tem tema carregado, restaura automaticamente o tema ativo EM PRODUÇÃO (nunca posted)
         const lastActiveId = localStorage.getItem('wf_last_active_theme_id');
         let found = lastActiveId ? wfPlannedThemes.find(t => t.id === lastActiveId) : null;
-        if (!found || found.status !== 'in_production') {
-          found = wfPlannedThemes.find(t => t.status === 'in_production');
+        if (!found || found.status !== 'in_production' || found.status === 'posted' || found.published_url) {
+          found = wfPlannedThemes.find(t => t.status === 'in_production' && t.status !== 'posted' && !t.published_url);
         }
-        if (found && found.status === 'in_production') {
+        if (found && found.status === 'in_production' && !found.published_url) {
           wfState.currentThemeId = found.id;
           wfState.currentTheme = found;
           wfState.scheduledDate = found.scheduled_date || null;
           wfState.scheduledTime = found.scheduled_time || null;
           localStorage.setItem('wf_last_active_theme_id', found.id);
+          const topicInput = $('#wf-script-topic');
+          if (topicInput && !topicInput.value.trim() && found.topic) {
+            topicInput.value = found.topic;
+          }
+          const angleInput = $('#wf-script-angle');
+          if (angleInput && !angleInput.value.trim() && found.hook_angle) {
+            angleInput.value = found.hook_angle;
+          }
           renderWorkflowActiveThemeCard();
         }
       }
@@ -5131,6 +5564,15 @@ function renderWorkflowPlannedThemes(themes, filter = 'all', formatFilter = 'all
     const dir = btn.dataset.sortDirection;
     btn.classList.toggle('active', dir === wfThemesSortDirection);
   });
+
+  // Atualiza o resumo visual de exibição na barra secundária
+  const hintEl = $('#wf-toolbar-view-hint');
+  if (hintEl) {
+    const modeName = wfThemesViewMode === 'by_day' ? 'Por Dia' : 'Grade Geral';
+    const orderName = wfThemesSortDirection === 'asc' ? 'Crescente' : 'Decrescente';
+    const scopeName = wfThemesScope === 'upcoming' ? 'Hoje & Próximos' : 'Histórico Completo';
+    hintEl.innerHTML = `Exibição: <strong>${modeName} (${orderName})</strong> · <em>${scopeName}</em>`;
+  }
 
   // Separação entre itens passados (< Hoje) e itens de hoje/futuro
   const isPastTheme = (t) => {
@@ -5629,6 +6071,7 @@ $('#wf-deduplicate-themes-btn')?.addEventListener('click', async () => {
   try {
     const res = await mutate('/api/workflow/planned-themes/deduplicate', 'POST', {}, '');
     await loadWorkflowPlannedThemes();
+    await refreshDashboard(true);
     if (res && res.count > 0) {
       showToast(`🧹 Limpeza concluída: ${res.count} item(ns) duplicado(s) removido(s) com sucesso!`, 'success');
     } else {
@@ -5642,6 +6085,179 @@ $('#wf-deduplicate-themes-btn')?.addEventListener('click', async () => {
 });
 
 // Renderiza o card do tema ativo na Etapa 1
+// ====================================================
+// Monitor Dinâmico de Progresso das Etapas (Etapas 2 a 7)
+// ====================================================
+function getWorkflowStepStatuses() {
+  const currentTheme = wfState.currentTheme || (Array.isArray(wfPlannedThemes) ? wfPlannedThemes.find(t => t.id === wfState.currentThemeId) : null);
+  const isThemePosted = currentTheme?.status === 'posted';
+
+  // 1. Etapa 2: Roteiro
+  const isScriptOutputVisible = Boolean($('#wf-script-output') && !$('#wf-script-output').classList.contains('hidden'));
+  const scriptChars = wfState.script?.totalCharacters ||
+    (wfState.script?.fullScript ? wfState.script.fullScript.length : 0) ||
+    $('#wf-out-full-script-text')?.textContent?.trim()?.length ||
+    0;
+  const hasScript = isThemePosted || (isScriptOutputVisible && scriptChars >= 300);
+
+  // 2. Etapa 3: Narração
+  let narrationCount = Array.isArray(wfState.narrationBlocks) ? wfState.narrationBlocks.length : 0;
+  if (!narrationCount && Array.isArray(wfState.script?.narrationBlocks)) {
+    narrationCount = wfState.script.narrationBlocks.length;
+  }
+  const hasNarrationContainer = Boolean($('#wf-narration-blocks-container') && !$('#wf-narration-blocks-container').classList.contains('hidden') && $('#wf-narration-blocks-container').children?.length > 0 && !$('#wf-narration-blocks-container').querySelector('.placeholder-text'));
+  const hasNarration = isThemePosted || (hasScript && (narrationCount > 0 || hasNarrationContainer));
+
+  // 3. Etapa 4: Imagens (Google Flow 35 Prompts)
+  let gfCount = Array.isArray(wfState.googleFlowPrompts) ? wfState.googleFlowPrompts.length : 0;
+  const isGfContainerVisible = Boolean($('#wf-google-flow-container') && !$('#wf-google-flow-container').classList.contains('hidden'));
+  const hasGfList = Boolean($('#wf-modal-google-flow-list') && $('#wf-modal-google-flow-list').children?.length > 0);
+  const hasGf = isThemePosted || (isGfContainerVisible && (gfCount > 0 || hasGfList));
+
+  // 4. Etapa 5: Capas (Nano Banana)
+  let nbCount = Array.isArray(wfState.nanoBananaPrompts) ? wfState.nanoBananaPrompts.length : 0;
+  const isNbContainerVisible = Boolean($('#wf-nano-banana-container') && !$('#wf-nano-banana-container').classList.contains('hidden'));
+  const hasNbCards = Boolean($('#wf-nano-banana-list') && $('#wf-nano-banana-list').children?.length > 0);
+  const hasNb = isThemePosted || (isNbContainerVisible && (nbCount > 0 || hasNbCards));
+
+  // 5. Etapa 6: Metadados SEO
+  const isSeoContainerVisible = Boolean($('#wf-seo-container') && !$('#wf-seo-container').classList.contains('hidden') && $('#wf-seo-title')?.textContent?.trim());
+  const hasSeoInput = Boolean($('#wf-upload-title')?.value?.trim() && $('#wf-upload-description')?.value?.trim());
+  const hasSeo = isThemePosted || isSeoContainerVisible || hasSeoInput;
+
+  // 6. Etapa 7: Agendamento / Postagem no YouTube
+  const hasUploadFile = Boolean($('#wf-upload-path')?.value?.trim());
+  let prodData = null;
+  if (currentTheme?.production_data) {
+    try {
+      prodData = typeof currentTheme.production_data === 'string' ? JSON.parse(currentTheme.production_data) : currentTheme.production_data;
+    } catch (_) {}
+  }
+  const isPosted = isThemePosted || Boolean(
+    currentTheme?.status === 'scheduled' ||
+    currentTheme?.published_url ||
+    prodData?.scheduleId ||
+    prodData?.logFilePath ||
+    (lastProductionLog && lastProductionLog.title)
+  );
+
+  return {
+    hasScript,
+    scriptChars,
+    hasNarration,
+    narrationCount,
+    hasGf,
+    gfCount: gfCount || 35,
+    hasNb,
+    nbCount: nbCount || 3,
+    hasSeo,
+    hasUploadFile,
+    isPosted
+  };
+}
+window.getWorkflowStepStatuses = getWorkflowStepStatuses;
+
+function updateWorkflowTopTimeline() {
+  const timelineEl = $('#wf-topbar-steps-timeline');
+  if (!timelineEl) return;
+
+  // Exibe o timeline apenas no Modelador
+  const hash = (window.location.hash || '').replace('#', '').toLowerCase();
+  const currentActiveView = (typeof ui !== 'undefined' && ui.currentView) ||
+    (typeof currentView !== 'undefined' ? currentView : '') ||
+    hash ||
+    'overview';
+
+  const isWorkflow = currentActiveView === 'workflow' || hash.includes('workflow') || hash === 'modelador';
+  if (!isWorkflow) {
+    timelineEl.classList.add('hidden');
+    return;
+  }
+  timelineEl.classList.remove('hidden');
+
+  const p = getWorkflowStepStatuses();
+
+  // Etapa 2: Roteiro
+  const pill2 = $('#topbar-pill-step-2');
+  const ico2 = $('#topbar-ico-2');
+  if (pill2) {
+    pill2.classList.toggle('completed', p.hasScript);
+    if (ico2) ico2.textContent = p.hasScript ? '✓' : '⌛';
+  }
+
+  // Etapa 3: Narração
+  const pill3 = $('#topbar-pill-step-3');
+  const ico3 = $('#topbar-ico-3');
+  if (pill3) {
+    pill3.classList.toggle('completed', p.hasNarration);
+    if (ico3) ico3.textContent = p.hasNarration ? '✓' : '⌛';
+  }
+
+  // Etapa 4: Imagens
+  const pill4 = $('#topbar-pill-step-4');
+  const ico4 = $('#topbar-ico-4');
+  if (pill4) {
+    pill4.classList.toggle('completed', p.hasGf);
+    if (ico4) ico4.textContent = p.hasGf ? '✓' : '⌛';
+  }
+
+  // Etapa 5: Capas
+  const pill5 = $('#topbar-pill-step-5');
+  const ico5 = $('#topbar-ico-5');
+  if (pill5) {
+    pill5.classList.toggle('completed', p.hasNb);
+    if (ico5) ico5.textContent = p.hasNb ? '✓' : '⌛';
+  }
+
+  // Etapa 6: SEO
+  const pill6 = $('#topbar-pill-step-6');
+  const ico6 = $('#topbar-ico-6');
+  if (pill6) {
+    const isStep6Done = p.hasSeo || p.isPosted;
+    pill6.classList.toggle('completed', isStep6Done);
+    if (ico6) ico6.textContent = isStep6Done ? '✓' : '⌛';
+  }
+
+  // Etapa 7: Postagem
+  const pill7 = $('#topbar-pill-step-7');
+  const ico7 = $('#topbar-ico-7');
+  if (pill7) {
+    if (p.isPosted) {
+      pill7.classList.add('completed');
+      pill7.classList.remove('active');
+      if (ico7) ico7.textContent = '✓';
+    } else if (p.hasUploadFile) {
+      pill7.classList.remove('completed');
+      pill7.classList.add('active');
+      if (ico7) ico7.textContent = '⚙️';
+    } else {
+      pill7.classList.remove('completed', 'active');
+      if (ico7) ico7.textContent = '⌛';
+    }
+  }
+
+  // Ativa navegação suave ao clicar nos pills
+  attachWorkflowTopTimelineListeners();
+}
+window.updateWorkflowTopTimeline = updateWorkflowTopTimeline;
+
+function attachWorkflowTopTimelineListeners() {
+  document.querySelectorAll('.topbar-step-pill').forEach(pill => {
+    if (pill._hasScrollListener) return;
+    pill._hasScrollListener = true;
+    pill.addEventListener('click', (e) => {
+      e.preventDefault();
+      const targetSelector = pill.getAttribute('data-step-target');
+      if (targetSelector) {
+        const targetEl = document.querySelector(targetSelector);
+        if (targetEl) {
+          targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }
+    });
+  });
+}
+
 function renderWorkflowActiveThemeCard() {
   const container = $('#wf-active-theme-display');
   if (!container) return;
@@ -5681,11 +6297,12 @@ function renderWorkflowActiveThemeCard() {
       originBadge = `<span style="font-size: 11px; color: #fbbf24; background: rgba(251, 191, 36, 0.12); border: 1px solid rgba(251, 191, 36, 0.25); padding: 2px 7px; border-radius: 4px; font-weight: 600;">⚠️ Produção Avulsa (Roteiro Livre)</span>`;
     }
 
-    // Progresso dos Artefatos
-    const scriptChars = wfState.script?.totalCharacters || $('#wf-out-full-script-text')?.textContent?.length || 0;
-    const hasScript = scriptChars > 500;
-    const narrationCount = Array.isArray(wfState.narrationBlocks) ? wfState.narrationBlocks.length : (wfState.script?.narrationBlocks?.length || 0);
-    const hasGf = Array.isArray(wfState.googleFlowPrompts) && wfState.googleFlowPrompts.length > 0;
+    // Progresso Real dos Artefatos de Todas as Etapas (2, 3, 4, 5, 6 e 7)
+    const p = getWorkflowStepStatuses();
+
+    const statusBadge = p.isPosted
+      ? `<span class="status-pill success" style="font-size: 11px; background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.4); font-weight: 700;">✓ Programado no YouTube</span>`
+      : `<span class="status-pill info" style="font-size: 11px;">⚙️ Editando no Estúdio</span>`;
 
     container.innerHTML = `
       <div style="background: linear-gradient(135deg, rgba(255, 77, 94, 0.08) 0%, rgba(18, 22, 34, 0.88) 100%); border: 1px solid rgba(255, 77, 94, 0.32); border-radius: 12px; padding: 16px 20px; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap;">
@@ -5694,7 +6311,7 @@ function renderWorkflowActiveThemeCard() {
             ${fmtBadge}
             ${dateBadge}
             ${originBadge}
-            <span class="status-pill info" style="font-size: 11px;">⚙️ Editando no Estúdio</span>
+            ${statusBadge}
           </div>
 
           <h3 style="margin: 0; font-size: 16px; font-weight: 700; color: #fff; line-height: 1.35;">
@@ -5708,13 +6325,19 @@ function renderWorkflowActiveThemeCard() {
             </p>
           ` : ''}
 
-          <!-- Linha de Status de Conclusão do Vídeo -->
-          <div style="display: flex; align-items: center; gap: 12px; font-size: 11.5px; color: var(--text-2); margin-top: 4px; flex-wrap: wrap;">
-            <span><strong>Roteiro:</strong> ${hasScript ? `<span style="color: #10b981; font-weight: 600;">✓ Pronto (${scriptChars.toLocaleString('pt-BR')} carac.)</span>` : '<span style="color: var(--muted);">⏳ Não gerado</span>'}</span>
+          <!-- Linha de Status de Conclusão do Vídeo (Etapas 2, 3, 4, 5, 6 e 7) -->
+          <div style="display: flex; align-items: center; gap: 10px; font-size: 11.5px; color: var(--text-2); margin-top: 6px; flex-wrap: wrap; background: rgba(0, 0, 0, 0.28); padding: 7px 12px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.06);">
+            <span><strong>2. Roteiro:</strong> ${p.hasScript ? `<span style="color: #10b981; font-weight: 600;">✓ Pronto (${p.scriptChars.toLocaleString('pt-BR')} carac.)</span>` : '<span style="color: var(--muted);">⏳ Pendente</span>'}</span>
             <span>·</span>
-            <span><strong>Narração:</strong> ${narrationCount > 0 ? `<span style="color: #10b981; font-weight: 600;">✓ ${narrationCount} Blocos</span>` : '<span style="color: var(--muted);">⏳ Não gerada</span>'}</span>
+            <span><strong>3. Narração:</strong> ${p.hasNarration ? `<span style="color: #10b981; font-weight: 600;">✓ ${p.narrationCount} Blocos</span>` : '<span style="color: var(--muted);">⏳ Pendente</span>'}</span>
             <span>·</span>
-            <span><strong>Imagens:</strong> ${hasGf ? '<span style="color: #10b981; font-weight: 600;">✓ Prompts Gerados</span>' : '<span style="color: var(--muted);">⏳ Pendente</span>'}</span>
+            <span><strong>4. Imagens:</strong> ${p.hasGf ? `<span style="color: #10b981; font-weight: 600;">✓ 35 Prompts</span>` : '<span style="color: var(--muted);">⏳ Pendente</span>'}</span>
+            <span>·</span>
+            <span><strong>5. Capas:</strong> ${p.hasNb ? `<span style="color: #10b981; font-weight: 600;">✓ 3 Nano Banana</span>` : '<span style="color: var(--muted);">⏳ Pendente</span>'}</span>
+            <span>·</span>
+            <span><strong>6. SEO:</strong> ${p.hasSeo || p.isPosted ? `<span style="color: #10b981; font-weight: 600;">✓ Título &amp; SEO Criados</span>` : '<span style="color: var(--muted);">⏳ Pendente</span>'}</span>
+            <span>·</span>
+            <span><strong>7. Postagem:</strong> ${p.isPosted ? `<span style="color: #10b981; font-weight: 600;">✓ Programado no YouTube</span>` : (p.hasUploadFile ? '<span style="color: #38bdf8; font-weight: 600;">⚙️ Vídeo Anexado</span>' : '<span style="color: var(--muted);">⏳ Aguardando Envio</span>')}</span>
           </div>
         </div>
 
@@ -5739,6 +6362,9 @@ function renderWorkflowActiveThemeCard() {
         </div>
       </div>
     `;
+
+    // Atualiza imediatamente o timeline da topbar
+    updateWorkflowTopTimeline();
   } else {
     container.innerHTML = `
       <div style="background: rgba(255, 255, 255, 0.03); border: 1px dashed rgba(255, 255, 255, 0.14); border-radius: 12px; padding: 16px 20px; display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;">
@@ -5765,12 +6391,19 @@ function renderActiveProductionsBar() {
   if (!container) return;
 
   const topicInputVal = $('#wf-script-topic')?.value?.trim() || '';
-  const inProdThemes = (Array.isArray(wfPlannedThemes) ? wfPlannedThemes : []).filter(t => 
-    t.status === 'in_production' || t.id === wfState.currentThemeId || (t.full_script && t.status !== 'posted') || (t.production_data && t.status !== 'posted')
-  );
+  const inProdThemes = (Array.isArray(wfPlannedThemes) ? wfPlannedThemes : []).filter(t => {
+    // BLINDAGEM MÁXIMA: Vídeos que já foram postados ou possuem link no YouTube NUNCA aparecem em produção simultânea!
+    if (t.status === 'posted' || t.published_url) return false;
+    return t.status === 'in_production' || (t.full_script && t.status !== 'posted') || (t.production_data && t.status !== 'posted');
+  });
 
   // Se o tema atual não é um tema do banco com status 'in_production', mas tem tópico ou roteiro, adiciona aos ativos
-  if (topicInputVal && !inProdThemes.some(t => t.id === wfState.currentThemeId || (t.topic && t.topic.toLowerCase() === topicInputVal.toLowerCase()))) {
+  // BLINDAGEM: Se o tema atual já foi postado ou possui link no YouTube, NUNCA é adicionado como ativo em produção!
+  const isCurrentPosted = wfState.currentTheme?.status === 'posted' || 
+                          wfState.currentTheme?.published_url || 
+                          (Array.isArray(wfPlannedThemes) && wfPlannedThemes.some(t => t.id === wfState.currentThemeId && (t.status === 'posted' || t.published_url)));
+
+  if (topicInputVal && !isCurrentPosted && !inProdThemes.some(t => t.id === wfState.currentThemeId || (t.topic && t.topic.toLowerCase() === topicInputVal.toLowerCase()))) {
     inProdThemes.unshift({
       id: wfState.currentThemeId || 'current_draft',
       topic: topicInputVal,
@@ -5852,15 +6485,15 @@ function openParallelProductionModal({ mode = 'parallel' } = {}) {
     if (desc) desc.innerHTML = 'O vídeo atual é <strong>salvo automaticamente</strong> no banco de dados com todo o roteiro, narrações e prompts. Escolha qual vídeo do cronograma deseja começar a produzir em paralelo:';
   }
 
-  // Lista todos os temas pendentes ou em produção do cronograma (que ainda não foram postados)
+  // Lista os temas do cronograma (no modo switch permite escolher qualquer tema, inclusive para reenvio)
   const availableThemes = (Array.isArray(wfPlannedThemes) ? wfPlannedThemes : [])
-    .filter(t => t.status !== 'posted')
+    .filter(t => mode === 'switch' ? true : t.status !== 'posted')
     .sort((a, b) => (a.scheduled_date || '9999').localeCompare(b.scheduled_date || '9999'));
 
   if (availableThemes.length === 0) {
     listEl.innerHTML = `
       <div style="padding: 24px; text-align: center; color: var(--text-2); font-size: 13px;">
-        Nenhum tema pendente disponível no momento. Crie ou importe novos temas no Calendário Editorial!
+        Nenhum tema disponível no momento. Crie ou importe novos temas no Calendário Editorial!
       </div>
     `;
   } else {
@@ -5870,21 +6503,34 @@ function openParallelProductionModal({ mode = 'parallel' } = {}) {
       const timeStr = t.scheduled_time ? ` · ⏰ ${t.scheduled_time}` : '';
       const isShort = t.format === 'short' || /#shorts?/i.test(t.topic || '');
       const fmtLabel = isShort ? '⚡ Short' : '🎬 Vídeo Longo';
-      const statusLabel = t.status === 'in_production' ? '⚙️ Em Produção' : '⏳ Pendente';
+      const isPosted = t.status === 'posted';
+      let statusLabel = '⏳ Pendente';
+      let statusColor = 'var(--muted)';
+      if (t.status === 'in_production') {
+        statusLabel = '⚙️ Em Produção';
+        statusColor = '#38bdf8';
+      } else if (isPosted) {
+        statusLabel = '✓ No YouTube / Programado';
+        statusColor = '#4ade80';
+      }
+
+      let buttonLabel = '🎬 Carregar no Estúdio';
+      if (isCurrent) buttonLabel = '✓ Em Edição';
+      else if (isPosted) buttonLabel = '🔄 Reenviar / Abrir';
 
       return `
-        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; background: ${isCurrent ? 'rgba(59, 130, 246, 0.12)' : 'rgba(255, 255, 255, 0.04)'}; border: 1px solid ${isCurrent ? 'rgba(59, 130, 246, 0.4)' : 'rgba(255, 255, 255, 0.08)'}; border-radius: 8px;">
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; background: ${isCurrent ? 'rgba(59, 130, 246, 0.12)' : 'rgba(255, 255, 255, 0.04)'}; border: 1px solid ${isCurrent ? 'rgba(59, 130, 246, 0.4)' : (isPosted ? 'rgba(74, 222, 128, 0.2)' : 'rgba(255, 255, 255, 0.08)')}; border-radius: 8px;">
           <div style="flex: 1; min-width: 0;">
             <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 4px; flex-wrap: wrap;">
               <span style="font-size: 11px; color: #93c5fd; font-weight: 700; background: rgba(59, 130, 246, 0.2); padding: 2px 7px; border-radius: 4px;">📅 ${escapeHTML(dateStr)}${escapeHTML(timeStr)}</span>
               <span style="font-size: 11px; color: var(--text-2); background: rgba(255,255,255,0.06); padding: 2px 6px; border-radius: 4px;">${fmtLabel}</span>
-              <span style="font-size: 10.5px; color: ${t.status === 'in_production' ? '#38bdf8' : 'var(--muted)'};">${statusLabel}</span>
+              <span style="font-size: 10.5px; color: ${statusColor}; font-weight: 600;">${statusLabel}</span>
             </div>
             <strong style="font-size: 13.5px; color: #fff; display: block; line-height: 1.35;">${escapeHTML(t.topic)}</strong>
             ${t.hook_angle ? `<span style="font-size: 11.5px; color: var(--text-2); display: block; margin-top: 2px;">🎣 ${escapeHTML(t.hook_angle)}</span>` : ''}
           </div>
-          <button type="button" class="button ${isCurrent ? 'ghost' : 'primary'} small" data-start-parallel-theme-id="${escapeHTML(t.id)}" style="flex-shrink: 0; font-size: 12px; padding: 7px 14px; font-weight: 600;" ${isCurrent ? 'disabled' : ''}>
-            ${isCurrent ? '✓ Em Edição' : '🎬 Carregar no Estúdio'}
+          <button type="button" class="button ${isCurrent ? 'ghost' : (isPosted ? 'secondary' : 'primary')} small" data-start-parallel-theme-id="${escapeHTML(t.id)}" style="flex-shrink: 0; font-size: 12px; padding: 7px 14px; font-weight: 600;" ${isCurrent ? 'disabled' : ''}>
+            ${buttonLabel}
           </button>
         </div>
       `;
@@ -6072,6 +6718,29 @@ async function applyThemeToWorkflowStudio(currentTheme, { topic, angle, format }
       if (typeof revealMetadataFields === 'function') revealMetadataFields(false);
       restoredItems.push('SEO Completo');
     }
+  } else {
+    // 🛡️ BLINDAGEM ANTI-VAZAMENTO: Se o tema NÃO possui SEO próprio salvo ainda, LIMPA dados residuais de outros temas!
+    wfState.seo = null;
+    $('#wf-seo-container')?.classList.add('hidden');
+    if ($('#wf-out-title')) $('#wf-out-title').textContent = '';
+    if ($('#wf-out-desc')) $('#wf-out-desc').textContent = '';
+    if ($('#wf-out-hashtags')) $('#wf-out-hashtags').textContent = '';
+
+    // No formulário de postagem (Etapa 7), define o título padrão estritamente como o tema atual e limpa a descrição
+    const titleEl = $('#wf-upload-title');
+    if (titleEl) {
+      titleEl.value = effTopic || '';
+      if (typeof updateTitleCharCounter === 'function') updateTitleCharCounter();
+    }
+    const descEl = $('#wf-upload-description') || $('#wf-upload-desc');
+    if (descEl) {
+      descEl.value = '';
+      if (typeof updateDescCharCounter === 'function') updateDescCharCounter();
+    }
+    const tagsEl = $('#wf-upload-tags');
+    if (tagsEl) {
+      tagsEl.value = '';
+    }
   }
 
   // 5) Restauração de campos contextuais adicionais salvos em production_data
@@ -6122,6 +6791,7 @@ async function applyThemeToWorkflowStudio(currentTheme, { topic, angle, format }
   const videoFileInput = $('#wf-video-file-input');
   if (videoFileInput) videoFileInput.value = '';
   $('#wf-video-selected-box')?.classList.add('hidden');
+  $('#wf-video-upload-progress')?.classList.add('hidden');
   $('#wf-video-drop-content')?.classList.remove('hidden');
 
   const thumbInput = $('#wf-upload-thumbnail-path');
@@ -6372,7 +7042,7 @@ document.addEventListener('click', (e) => {
   const switchProdBtn = e.target.closest('[data-switch-prod-id]');
   if (switchProdBtn) {
     const targetId = switchProdBtn.dataset.switchProdId;
-    if (targetId && targetId !== wfState.currentThemeId) {
+    if (targetId) {
       const targetTheme = (Array.isArray(wfPlannedThemes) ? wfPlannedThemes : []).find(t => t.id === targetId);
       if (targetTheme) {
         applyThemeToWorkflowStudio(targetTheme, {
@@ -6400,6 +7070,11 @@ document.addEventListener('click', (e) => {
     if (targetTheme) {
       const modal = $('#wf-pick-parallel-theme-dialog');
       modal?.close();
+
+      if (targetTheme.status === 'posted') {
+        startReuploadFlow(targetTheme.id);
+        return;
+      }
 
       const isPending = !targetTheme?.status || targetTheme?.status === 'pending';
       const hasRecordedTime = targetTheme.scheduled_time && String(targetTheme.scheduled_time).trim().length >= 4;
@@ -6566,12 +7241,42 @@ $('#wf-direct-script-input')?.addEventListener('input', (e) => {
   }
 });
 
+// Confirmação de segurança para evitar perda acidental de roteiro, prompts e SEO
+function confirmOverwriteExistingProduction(actionName = 'gerar um novo roteiro') {
+  const hasScript = Boolean(wfState.script?.fullScript && String(wfState.script.fullScript).trim().length > 100);
+  const hasPrompts = Array.isArray(wfState.googleFlowPrompts) && wfState.googleFlowPrompts.length > 0;
+  const hasNano = Array.isArray(wfState.nanoBananaPrompts) && wfState.nanoBananaPrompts.length > 0;
+  const hasSEO = Boolean(wfState.seo && (wfState.seo.title || wfState.seo.description));
+
+  if (!hasScript && !hasPrompts && !hasNano && !hasSEO) {
+    return true; // Nada existente, pode prosseguir
+  }
+
+  const items = [];
+  if (hasScript) items.push('• Roteiro completo e blocos de narração');
+  if (hasPrompts) items.push(`• ${wfState.googleFlowPrompts.length} Prompts de Imagem do Google Flow`);
+  if (hasNano) items.push('• Variações de Capa (Nano Banana)');
+  if (hasSEO) items.push('• Título, Descrição e Tags de SEO');
+
+  const msg = `⚠️ ATENÇÃO: Este vídeo já possui conteúdo gerado!\n\n` +
+    `Ao ${actionName}, você irá SUBSTITUIR e REINICIAR:\n` +
+    items.join('\n') + `\n\n` +
+    `Deseja realmente SOBRESCREVER e recriar tudo do zero?`;
+
+  return window.confirm(msg);
+}
+
 $('#wf-apply-direct-script-btn')?.addEventListener('click', async () => {
   const scriptText = $('#wf-direct-script-input')?.value?.trim();
   const topic = $('#wf-script-topic')?.value?.trim() || 'Roteiro Total Externo';
   if (!scriptText) {
     showToast('Cole o texto do roteiro antes de aplicar.', 'warning');
     $('#wf-direct-script-input')?.focus();
+    return;
+  }
+
+  // Trava de segurança: impede sobrescrever artefatos existentes sem confirmação
+  if (!confirmOverwriteExistingProduction('aplicar um novo roteiro externo')) {
     return;
   }
 
@@ -6614,18 +7319,170 @@ $('#wf-apply-direct-script-btn')?.addEventListener('click', async () => {
   }
 });
 
-// Etapa 2: Gerar Roteiro Estruturado (Meta: 10.000 Caracteres)
+// ====================================================
+// Gerenciador Dinâmico de Meta/Limite de Caracteres do Roteiro
+// ====================================================
+const WF_TARGET_CHARS_STORAGE_KEY = 'wf_custom_target_characters';
+
+function getScriptTargetCharacters() {
+  const inp = $('#wf-script-target-chars');
+  const raw = inp ? parseInt(inp.value, 10) : NaN;
+  if (!Number.isNaN(raw) && raw >= 5000) {
+    return raw;
+  }
+  try {
+    const saved = parseInt(localStorage.getItem(WF_TARGET_CHARS_STORAGE_KEY), 10);
+    if (!Number.isNaN(saved) && saved >= 5000) {
+      return saved;
+    }
+  } catch (_) {}
+  return 10000;
+}
+window.getScriptTargetCharacters = getScriptTargetCharacters;
+
+function setScriptTargetCharacters(value, persist = true) {
+  let num = parseInt(value, 10);
+  // Regra de segurança estrita: Se apagar por engano, crava nos 10.000!
+  if (Number.isNaN(num) || num < 5000) {
+    num = 10000;
+  }
+
+  const inp = $('#wf-script-target-chars');
+  if (inp && parseInt(inp.value, 10) !== num) {
+    inp.value = num;
+  }
+
+  // Atualiza label do botão de geração
+  const btnLabel = $('#wf-btn-target-chars-label');
+  if (btnLabel) {
+    btnLabel.textContent = num.toLocaleString('pt-BR');
+  }
+  const genBtn = $('#wf-generate-script-btn');
+  if (genBtn && !genBtn.disabled) {
+    genBtn.textContent = `⚡ Gerar Roteiro Completo de ${num.toLocaleString('pt-BR')} Caracteres`;
+  }
+
+  // Atualiza label do cabeçalho da Etapa 2
+  const eyebrowLabel = $('#wf-eyebrow-target-chars-label');
+  if (eyebrowLabel) {
+    eyebrowLabel.textContent = num.toLocaleString('pt-BR');
+  }
+
+  // Atualiza chips rápidos de seleção
+  document.querySelectorAll('.chip-target-chars').forEach(chip => {
+    const chipVal = parseInt(chip.dataset.chars, 10);
+    if (chipVal === num) {
+      chip.classList.add('active');
+    } else {
+      chip.classList.remove('active');
+    }
+  });
+
+  // Atualiza texto do botão de cópia geral da narração
+  const copyNarrationBtn = $('#wf-copy-all-narration-btn');
+  if (copyNarrationBtn) {
+    copyNarrationBtn.textContent = `📋 Copiar Roteiro Geral Corrido (Max ${num.toLocaleString('pt-BR')} carac.)`;
+  }
+
+  // Atualiza dinamicamente as explicações do banner de limites de TTS na Etapa 3
+  const ttsBanner = $('#wf-narration-tts-banner');
+  if (ttsBanner) {
+    const formattedNum = num.toLocaleString('pt-BR');
+    const estMin = Math.round(num / 930);
+    const estMax = Math.round(num / 800);
+    const bannerContent = ttsBanner.querySelector('div:nth-child(2)');
+    if (bannerContent) {
+      bannerContent.innerHTML = `
+        <strong style="display: block; margin-bottom: 4px;">Atenção aos Limites: Meta de ${formattedNum} caracteres configurada e 5.000 na IA de Voz</strong>
+        <div style="margin-bottom: 5px;">
+          • <strong>Trava de ${formattedNum} Caracteres:</strong> O botão geral acima copia o roteiro contínuo higienizado garantindo até <strong>${formattedNum} caracteres</strong> (cortando na última frase completa apenas se o roteiro exceder esta meta).
+        </div>
+        <div style="margin-bottom: 5px;">
+          • <strong>Texto 100% Corrido & Higienizado:</strong> Sem quebras de linha (<code style="font-size: 11px;">\\n</code>), sem aspas duplas e sem caracteres especiais que causam pausas forçadas ou erros de sintetizador.
+        </div>
+        <div>
+          • <strong>Por que o áudio deu apenas 4 a 5 minutos?</strong> Ferramentas como ElevenLabs possuem teto de 5.000 caracteres por geração (cortando o restante silenciosamente). Como ${formattedNum} caracteres geram ~${estMin} a ${estMax} minutos de voz, gere o áudio usando o <strong>Bloco 1</strong> e o <strong>Bloco 2</strong> separadamente, ou cole o <strong>Roteiro Geral Corrido</strong> caso sua ferramenta permita até ${formattedNum} caracteres de uma vez.
+        </div>
+      `;
+    }
+  }
+
+  // Memoriza para futuros vídeos (sempre que utilizar uma quantidade maior/personalizada)
+  if (persist) {
+    try {
+      localStorage.setItem(WF_TARGET_CHARS_STORAGE_KEY, String(num));
+    } catch (_) {}
+  }
+
+  return num;
+}
+window.setScriptTargetCharacters = setScriptTargetCharacters;
+
+// Listeners do limitador de caracteres da Etapa 2
+const targetCharsInputEl = $('#wf-script-target-chars');
+if (targetCharsInputEl) {
+  targetCharsInputEl.addEventListener('input', (e) => {
+    const val = parseInt(e.target.value, 10);
+    if (!Number.isNaN(val) && val >= 5000) {
+      setScriptTargetCharacters(val, true);
+    } else if (!e.target.value) {
+      // Se apagar por engano durante a digitação, o botão mostra o teto padrão de segurança de 10.000
+      const btnLabel = $('#wf-btn-target-chars-label');
+      if (btnLabel) btnLabel.textContent = '10.000';
+    }
+  });
+
+  // Ao sair do campo (blur), se estiver vazio, menor que 5.000 ou inválido, CRAVA EM 10.000!
+  targetCharsInputEl.addEventListener('blur', (e) => {
+    const val = parseInt(e.target.value, 10);
+    if (Number.isNaN(val) || val < 5000 || !e.target.value.trim()) {
+      setScriptTargetCharacters(10000, true);
+      showToast('Limite cravado automaticamente nos 10.000 caracteres padrão.', 'info');
+    } else {
+      setScriptTargetCharacters(val, true);
+    }
+  });
+}
+
+// Chips de seleção rápida de caracteres (10k, 12k, 15k)
+document.querySelectorAll('.chip-target-chars').forEach(chip => {
+  chip.addEventListener('click', () => {
+    const chars = parseInt(chip.dataset.chars, 10) || 10000;
+    setScriptTargetCharacters(chars, true);
+    showToast(`Meta de roteiro ajustada para ${chars.toLocaleString('pt-BR')} caracteres!`, 'success');
+  });
+});
+
+// Inicializa o valor memorizado do localStorage
+setTimeout(() => {
+  setScriptTargetCharacters(getScriptTargetCharacters(), false);
+}, 60);
+
+// Etapa 2: Gerar Roteiro Estruturado (Meta Dinâmica de Caracteres)
 $('#wf-generate-script-btn')?.addEventListener('click', async () => {
   const btn = $('#wf-generate-script-btn');
-  const topic = $('#wf-script-topic')?.value?.trim();
-  const authorAngle = $('#wf-script-author-angle')?.value?.trim() || '';
+  let topic = $('#wf-script-topic')?.value?.trim();
+  if (!topic && wfState.currentTheme?.topic) {
+    topic = wfState.currentTheme.topic;
+    if ($('#wf-script-topic')) $('#wf-script-topic').value = topic;
+  }
+  if (!topic) {
+    const cardTopic = $('#wf-active-theme-display h3')?.textContent?.trim();
+    if (cardTopic && cardTopic !== 'Tema em Produção' && !cardTopic.includes('Nenhum tema')) {
+      topic = cardTopic;
+      if ($('#wf-script-topic')) $('#wf-script-topic').value = topic;
+    }
+  }
+
+  const authorAngle = $('#wf-script-author-angle')?.value?.trim() || wfState.currentTheme?.hook_angle || '';
   const channelPosition = $('#wf-script-channel-pos')?.value?.trim() || '';
   const leaveOut = $('#wf-script-leave-out')?.value?.trim() || '';
   const hookType = $('#wf-script-hook-type')?.value || '';
   const angleFamily = $('#wf-script-angle-family')?.value || '';
-  const format = $('#wf-script-format')?.value || 'explainer';
+  const format = $('#wf-script-format')?.value || wfState.currentTheme?.format || 'explainer';
   const language = $('#wf-target-language')?.value || 'it-IT';
   const fieldAHistory = $('#wf-field-a')?.value || '';
+  const targetCharacters = getScriptTargetCharacters();
 
   if (!topic) {
     showToast('Informe o tema do roteiro primeiro.', 'error');
@@ -6633,8 +7490,13 @@ $('#wf-generate-script-btn')?.addEventListener('click', async () => {
     return;
   }
 
+  // Trava de segurança: impede apagar acidentalmente roteiro, prompts e SEO existentes
+  if (!confirmOverwriteExistingProduction(`gerar um novo roteiro de ${targetCharacters.toLocaleString('pt-BR')} caracteres`)) {
+    return;
+  }
+
   btn.disabled = true;
-  btn.textContent = '⚡ Escrevendo roteiro denso de 10.000 caracteres (14 blocos)...';
+  btn.textContent = `⚡ Escrevendo roteiro denso de ${targetCharacters.toLocaleString('pt-BR')} caracteres (14 blocos)...`;
   $('#loading').classList.add('active');
 
   try {
@@ -6649,8 +7511,9 @@ $('#wf-generate-script-btn')?.addEventListener('click', async () => {
       angleFamily,
       format,
       language,
-      fieldAHistory
-    }, 'Roteiro de 10.000 caracteres gerado e fatiado em blocos com sucesso!');
+      fieldAHistory,
+      targetCharacters
+    }, `Roteiro de ${targetCharacters.toLocaleString('pt-BR')} caracteres gerado e fatiado em blocos com sucesso!`);
 
     if (res.result) {
       wfState.script = res.result;
@@ -6675,7 +7538,7 @@ $('#wf-generate-script-btn')?.addEventListener('click', async () => {
     showToast(`Erro ao gerar roteiro: ${err.message}`, 'error');
   } finally {
     btn.disabled = false;
-    btn.textContent = '⚡ Gerar Roteiro Completo de 10.000 Caracteres';
+    btn.textContent = `⚡ Gerar Roteiro Completo de ${targetCharacters.toLocaleString('pt-BR')} Caracteres`;
     $('#loading').classList.remove('active');
   }
 });
@@ -6699,7 +7562,8 @@ function renderWorkflowScript(script) {
     pinnedCard.style.display = script.pinnedCommentQuestion?.trim() ? 'block' : 'none';
   }
 
-  // Medição real e rigorosa de caracteres (meta cravada: 10.000 caracteres)
+  // Medição real e rigorosa de caracteres com base na meta dinâmica
+  const targetChars = typeof getScriptTargetCharacters === 'function' ? getScriptTargetCharacters() : 10000;
   const part1Len = script.part1Chars || (script.part1 || '').length;
   const part2Len = script.part2Chars || (script.part2 || '').length;
   const totalLen = script.totalCharacters || (part1Len + part2Len);
@@ -6713,23 +7577,25 @@ function renderWorkflowScript(script) {
     $('#wf-badge-part2').style.display = part2Len > 0 ? 'inline-flex' : 'none';
   }
   if ($('#wf-badge-total')) {
-    const isOver10k = totalLen > 10000;
-    const isGood = totalLen >= 9000 && totalLen <= 10000;
-    if (isOver10k) {
+    const minTarget = Math.round(targetChars * 0.9);
+    const maxTarget = Math.round(targetChars * 1.05);
+    const isOver = totalLen > maxTarget;
+    const isGood = totalLen >= minTarget && totalLen <= maxTarget;
+    if (isOver) {
       $('#wf-badge-total').className = 'meta-badge warning';
       $('#wf-badge-total').style.borderColor = 'rgba(245, 158, 11, 0.4)';
       $('#wf-badge-total').style.color = '#f59e0b';
-      $('#wf-badge-total').innerHTML = `Total: <strong>${totalLen.toLocaleString()}</strong> carac. ⚠️ (Excede teto de 10.000 do navegador!)`;
+      $('#wf-badge-total').innerHTML = `Total: <strong>${totalLen.toLocaleString()}</strong> carac. ⚠️ (Excede teto de ${targetChars.toLocaleString()} carac.)`;
     } else if (isGood) {
       $('#wf-badge-total').className = 'meta-badge success';
       $('#wf-badge-total').style.borderColor = '';
       $('#wf-badge-total').style.color = '';
-      $('#wf-badge-total').innerHTML = `Total: <strong>${totalLen.toLocaleString()}</strong> carac. ✅ (Meta Cravada: 9k-10k)`;
+      $('#wf-badge-total').innerHTML = `Total: <strong>${totalLen.toLocaleString()}</strong> carac. ✅ (Meta Cravada: ${Math.round(minTarget / 1000)}k-${Math.round(targetChars / 1000)}k)`;
     } else {
       $('#wf-badge-total').className = 'meta-badge';
       $('#wf-badge-total').style.borderColor = '';
       $('#wf-badge-total').style.color = '';
-      $('#wf-badge-total').innerHTML = `Total: <strong>${totalLen.toLocaleString()}</strong> carac. (Abaixo da meta de 10k)`;
+      $('#wf-badge-total').innerHTML = `Total: <strong>${totalLen.toLocaleString()}</strong> carac. (Abaixo da meta de ${Math.round(targetChars / 1000)}k)`;
     }
   }
   if ($('#wf-badge-bible')) $('#wf-badge-bible').textContent = script.officialBible || '🇮🇹 Bibbia CEI 2008';
@@ -6737,6 +7603,8 @@ function renderWorkflowScript(script) {
 
   output.classList.remove('hidden');
   output.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  renderWorkflowActiveThemeCard();
+  updateWorkflowTopTimeline();
 }
 
 // Drawer de Inspecionar Registro de Gancho (Guia Colapsável na Etapa 2)
@@ -6834,14 +7702,15 @@ function estimateSpeechDuration(text) {
 }
 
 /**
- * Garante rigorosamente que o texto fique dentro do limite de 10.000 caracteres do navegador,
- * cortando na última frase completa (. ! ?) para nunca truncar palavras ou sentido no meio.
+ * Garante rigorosamente que o texto fique dentro da meta de caracteres configurada (10k, 12k, 15k ou personalizada),
+ * cortando na última frase completa (. ! ?) apenas se exceder a meta, para nunca truncar palavras ou sentido no meio.
  */
-function enforceMax10kChars(text, maxChars = 10000) {
+function enforceMaxTargetChars(text, maxChars = 10000) {
   if (!text || text.length <= maxChars) return text;
   const slice = text.slice(0, maxChars);
   const lastDot = Math.max(slice.lastIndexOf('. '), slice.lastIndexOf('! '), slice.lastIndexOf('? '));
-  if (lastDot > 8000) {
+  const minSafe = Math.round(maxChars * 0.85);
+  if (lastDot > minSafe) {
     return slice.slice(0, lastDot + 1).trim();
   }
   return slice.trim();
@@ -6865,16 +7734,17 @@ function copyFullNarrationScript(triggerBtn) {
     return;
   }
 
+  const targetChars = typeof getScriptTargetCharacters === 'function' ? getScriptTargetCharacters() : 10000;
   const cleanFull = cleanNarrationForTTS(fullText);
-  // Trava rigorosa: garante que NUNCA passe de 10.000 caracteres (limite do navegador)
-  const safeText = enforceMax10kChars(cleanFull, 10000);
+  // Trava dinâmica: respeita rigorosamente a meta selecionada (10.000, 12.000, 15.000 ou digitada)
+  const safeText = enforceMaxTargetChars(cleanFull, targetChars);
   copyToClipboard(safeText, triggerBtn);
   const est = estimateSpeechDuration(safeText);
 
-  if (cleanFull.length > 10000) {
-    showToast(`📋 Roteiro Geral copiado (${safeText.length.toLocaleString()} carac. · ${est})! Ajustado com segurança para o teto de 10.000 do navegador, sem quebras e sem caracteres especiais.`, 'success');
+  if (cleanFull.length > targetChars) {
+    showToast(`📋 Roteiro Geral copiado (${safeText.length.toLocaleString()} carac. · ${est})! Ajustado para o limite de ${targetChars.toLocaleString('pt-BR')} caracteres, sem quebras e sem caracteres especiais.`, 'success');
   } else {
-    showToast(`📋 Roteiro Geral corrido copiado (${safeText.length.toLocaleString()} carac. · ${est})! Texto único contínuo dentro do limite de 10.000 e sem caracteres especiais.`, 'success');
+    showToast(`📋 Roteiro Geral corrido copiado (${safeText.length.toLocaleString()} carac. · ${est})! Texto integral dentro da meta de ${targetChars.toLocaleString('pt-BR')} caracteres.`, 'success');
   }
 }
 
@@ -6934,14 +7804,17 @@ function renderNarrationBlocks(blocks) {
   const totalWords = cleanedBlocks.reduce((acc, b) => acc + b.text.split(/\s+/).filter(Boolean).length, 0);
   const totalEstTime = `~${(totalWords / 140).toFixed(1)} min`;
 
+  const targetChars = typeof getScriptTargetCharacters === 'function' ? getScriptTargetCharacters() : 10000;
+  const targetK = Math.round(targetChars / 1000);
+
   if (totalBadge) {
-    if (totalChars > 10000) {
-      totalBadge.textContent = `📜 Total: ${totalChars.toLocaleString()} carac. · ${totalEstTime} ⚠️ (> 10k)`;
+    if (totalChars > Math.round(targetChars * 1.05)) {
+      totalBadge.textContent = `📜 Total: ${totalChars.toLocaleString()} carac. · ${totalEstTime} ⚠️ (> ${targetK}k)`;
       totalBadge.style.color = '#f59e0b';
       totalBadge.style.borderColor = 'rgba(245, 158, 11, 0.4)';
       totalBadge.style.background = 'rgba(245, 158, 11, 0.12)';
     } else {
-      totalBadge.textContent = `📜 Total: ${totalChars.toLocaleString()} carac. · ${totalEstTime} (<= 10k OK)`;
+      totalBadge.textContent = `📜 Total: ${totalChars.toLocaleString()} carac. · ${totalEstTime} (≤ ${targetK}k OK)`;
       totalBadge.style.color = '#10b981';
       totalBadge.style.borderColor = 'rgba(16, 185, 129, 0.25)';
       totalBadge.style.background = 'rgba(16, 185, 129, 0.12)';
@@ -6950,8 +7823,8 @@ function renderNarrationBlocks(blocks) {
   }
   if (headerBtn) {
     headerBtn.style.display = 'inline-flex';
-    headerBtn.textContent = '📋 Copiar Roteiro Geral Corrido (Max 10.000 carac.)';
-    headerBtn.title = 'Copia o roteiro contínuo higienizado garantindo rigorosamente até 10.000 caracteres para o seu navegador';
+    headerBtn.textContent = `📋 Copiar Roteiro Geral Corrido (Max ${targetChars.toLocaleString('pt-BR')} carac.)`;
+    headerBtn.title = `Copia o roteiro contínuo higienizado garantindo rigorosamente até ${targetChars.toLocaleString('pt-BR')} caracteres para o seu navegador`;
   }
   if (ttsBanner) {
     ttsBanner.style.display = 'flex';
@@ -7042,6 +7915,8 @@ function renderGoogleFlowPrompts(prompts) {
   // Prepara a lista dentro do modal pop-up para visualização despoluída
   renderGoogleFlowModalList(prompts);
   container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  renderWorkflowActiveThemeCard();
+  updateWorkflowTopTimeline();
 }
 
 function renderGoogleFlowModalList(prompts) {
@@ -7130,6 +8005,11 @@ $('#wf-generate-nano-banana-btn')?.addEventListener('click', async () => {
   if (isNaN(versionsCount) || versionsCount < 1) versionsCount = 3;
   if (versionsCount > 10) versionsCount = 10;
 
+  // Preferências customizadas de manipulação de futuras capas
+  const customScenario = $('#wf-nb-custom-scenario')?.value || 'auto';
+  const customPalette = $('#wf-nb-custom-palette')?.value || 'auto';
+  const customTypography = $('#wf-nb-custom-typo')?.value || 'auto';
+
   btn.disabled = true;
   btn.textContent = `🖼️ Gerando ${versionsCount} versões em inglês...`;
   $('#loading').classList.add('active');
@@ -7141,7 +8021,10 @@ $('#wf-generate-nano-banana-btn')?.addEventListener('click', async () => {
       topic,
       script: wfState.script,
       language,
-      versionsCount
+      versionsCount,
+      customScenario,
+      customPalette,
+      customTypography
     }, `${versionsCount} versões de thumbnail para Nano Banana geradas!`);
 
     if (res.versions) {
@@ -7158,6 +8041,55 @@ $('#wf-generate-nano-banana-btn')?.addEventListener('click', async () => {
   }
 });
 
+// Alternar exibição do painel de Auditoria Anti-Mesmice e Manipulação de Futuras Capas
+function toggleAuditDetailsPanel(e) {
+  if (e && typeof e.preventDefault === 'function') {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  const box = document.getElementById('wf-audit-details-box');
+  const btn = document.getElementById('wf-toggle-audit-details-btn');
+  if (!box) return;
+
+  const isHidden = box.classList.contains('hidden') || box.style.display === 'none';
+  if (isHidden) {
+    box.classList.remove('hidden');
+    box.style.display = 'block';
+    if (btn) btn.innerHTML = '✕ Ocultar Capas Analisadas';
+
+    // Renderizar dinamicamente o histórico das últimas 5 capas analisadas
+    const listEl = document.getElementById('wf-audit-videos-list');
+    if (listEl) {
+      const postedThemes = (Array.isArray(wfPlannedThemes) ? wfPlannedThemes : [])
+        .filter(t => (t.status === 'posted' || t.published_url) && t.format !== 'short' && !/#shorts?/i.test(t.topic || ''))
+        .slice(0, 5);
+
+      if (postedThemes.length > 0) {
+        listEl.innerHTML = postedThemes.map((t, idx) => {
+          const dateStr = t.scheduled_date ? formatScheduleDate(t.scheduled_date) : '';
+          return `
+            <li style="margin-bottom: 6px;">
+              <span style="color: #38bdf8; font-weight: 700;">[${idx + 1}]</span>
+              <strong>${escapeHTML(t.topic)}</strong>
+              ${dateStr ? `<span style="color: var(--muted); font-size: 11px;"> · 📅 ${escapeHTML(dateStr)}</span>` : ''}
+              <span style="font-size: 10px; background: rgba(16, 185, 129, 0.15); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.3); padding: 1px 6px; border-radius: 4px; margin-left: 4px;">✓ Publicado / No YouTube</span>
+            </li>
+          `;
+        }).join('');
+      } else {
+        listEl.innerHTML = '<li><em>Nenhuma capa anterior encontrada no canal. Diretrizes solares ativas por padrão.</em></li>';
+      }
+    }
+  } else {
+    box.classList.add('hidden');
+    box.style.display = 'none';
+    if (btn) btn.innerHTML = '👁️ Ver Capas Analisadas';
+  }
+}
+window.toggleAuditDetailsPanel = toggleAuditDetailsPanel;
+
+$('#wf-toggle-audit-details-btn')?.addEventListener('click', toggleAuditDetailsPanel);
+
 function renderNanoBananaVersions(versions) {
   const container = $('#wf-nano-banana-container');
   const list = $('#wf-nano-banana-list');
@@ -7173,25 +8105,36 @@ function renderNanoBananaVersions(versions) {
     countBadge.textContent = `${count} Variaç${count === 1 ? 'ão Gerada' : 'ões Geradas'}`;
   }
 
+  const selectedVer = wfState.selectedNanoBananaVersion || 1;
+
   // Regra:
-  // Se até 3 variações: mostrar as caixas pretas individuais igual à imagem
+  // Se até 3 variações: mostrar as caixas pretas individuais com botão de escolher versão
   // Passou de 3: exibir formato compacto com os prompts em linha e separados por linha em branco
   if (count <= 3) {
     if (list) {
       list.style.display = 'grid';
-      list.innerHTML = versions.map(v => `
-        <div class="nano-banana-card">
-          <div>
-            <h4 class="nano-banana-title">${escapeHTML(v.title || `Versão ${v.version}`)}</h4>
-            <div class="nano-banana-prompt-box" id="wf-nb-prompt-${v.version}">${escapeHTML(v.promptNanoBanana)}</div>
+      list.innerHTML = versions.map(v => {
+        const isSelected = v.version === selectedVer;
+        return `
+          <div class="nano-banana-card ${isSelected ? 'selected-version' : ''}" style="${isSelected ? 'border: 2px solid #10b981; box-shadow: 0 0 16px rgba(16, 185, 129, 0.22);' : ''}">
+            <div>
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; gap: 8px;">
+                <h4 class="nano-banana-title" style="margin: 0;">${escapeHTML(v.title || `Versão ${v.version}`)}</h4>
+                ${isSelected ? '<span style="font-size: 10px; background: rgba(16, 185, 129, 0.2); color: #a7f3d0; border: 1px solid rgba(16, 185, 129, 0.4); padding: 2px 7px; border-radius: 4px; font-weight: 700;">✓ Capa Escolhida</span>' : ''}
+              </div>
+              <div class="nano-banana-prompt-box" id="wf-nb-prompt-${v.version}">${escapeHTML(v.promptNanoBanana)}</div>
+            </div>
+            <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px;">
+              <button type="button" class="button primary small copy-btn" data-target="wf-nb-prompt-${v.version}">
+                📋 Copiar Prompt
+              </button>
+              <button type="button" class="button ${isSelected ? 'success' : 'secondary'} small wf-select-nb-version-btn" data-nb-version="${v.version}" style="font-weight: 600; display: inline-flex; align-items: center; gap: 4px;">
+                ${isSelected ? '✓ Capa Oficial Selecionada' : '⭐ Escolher esta Capa'}
+              </button>
+            </div>
           </div>
-          <div>
-            <button type="button" class="button primary small copy-btn" data-target="wf-nb-prompt-${v.version}">
-              📋 Copiar Prompt para Nano Banana
-            </button>
-          </div>
-        </div>
-      `).join('');
+        `;
+      }).join('');
     }
     if (compactBox) {
       compactBox.style.display = 'none';
@@ -7206,7 +8149,6 @@ function renderNanoBananaVersions(versions) {
     if (compactBox && compactText) {
       compactBox.style.display = 'block';
       compactBox.classList.remove('hidden');
-      // Cada prompt é um bloco contínuo e são separados por exatamente 1 linha em branco
       const fullText = versions.map(v => {
         const clean = (v.promptNanoBanana || '').split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0 && !l.startsWith('RESULT:')).join('\n');
         return clean;
@@ -7216,6 +8158,8 @@ function renderNanoBananaVersions(versions) {
   }
 
   container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  renderWorkflowActiveThemeCard();
+  updateWorkflowTopTimeline();
 }
 
 // Botão para copiar todas as variações (cada bloco contínuo, separados por 1 linha em branco)
@@ -7234,24 +8178,81 @@ $('#wf-copy-all-nano-banana-btn')?.addEventListener('click', (e) => {
 // Etapa 6: Título, Descrição SEO e 7 Hashtags (sem #)
 $('#wf-generate-seo-btn')?.addEventListener('click', async () => {
   const btn = $('#wf-generate-seo-btn');
-  const topic = $('#wf-script-topic')?.value || '';
+  const currentTheme = wfState.currentTheme || (Array.isArray(wfPlannedThemes) ? wfPlannedThemes.find(t => t.id === wfState.currentThemeId) : null);
+  const topic = $('#wf-script-topic')?.value?.trim() || currentTheme?.topic || '';
   const language = $('#wf-target-language')?.value || 'it-IT';
 
+  // Extrai o roteiro completo de onde estiver (memória, DOM ou tema ativo)
+  const fullScriptText = wfState.script?.fullScript ||
+    $('#wf-out-full-script-text')?.textContent?.trim() ||
+    currentTheme?.full_script ||
+    wfState.script?.hook ||
+    '';
+
+  const existingTitle = wfState.seo?.title || $('#wf-out-title')?.textContent?.trim() || $('#wf-upload-title')?.value?.trim() || '';
+  const existingDesc = wfState.seo?.description || $('#wf-out-desc')?.textContent?.trim() || $('#wf-upload-desc')?.value?.trim() || '';
+
+  // 1. Confirmação estilo roteiro: se já tiver metadados gerados, avisa antes de sobrescrever
+  if (existingTitle || existingDesc) {
+    const confirmRegen = confirm(
+      `Já existem metadados de Título e SEO gerados:\n"${existingTitle}"\n\nDeseja re-analisar o roteiro para criar uma NOVA VERSÃO DIFERENTE e com maior alavancagem de CTR?\n\n[OK = Criar Nova Criação Otimizada]\n[Cancelar = Manter Atual]`
+    );
+    if (!confirmRegen) return;
+  }
+
   btn.disabled = true;
-  btn.textContent = '🚀 Gerando metadados de alto CTR...';
+  btn.textContent = '🚀 Re-analisando roteiro e criando nova variação de alto CTR...';
   $('#loading').classList.add('active');
 
   try {
     const res = await mutate('/api/workflow/generate-seo', 'POST', {
-      script: wfState.script,
+      script: {
+        topic,
+        fullScript: fullScriptText,
+        hook: wfState.script?.hook || currentTheme?.hook_angle || ''
+      },
       topic,
-      language
-    }, 'Título, descrição e 7 hashtags gerados no idioma ativo!');
+      language,
+      previousTitle: existingTitle,
+      previousDescription: existingDesc
+    }, 'Nova criação de Título, Descrição e Hashtags gerada com sucesso!');
 
     if (res.seo) {
       wfState.seo = res.seo;
       renderWorkflowSEO(res.seo);
+
+      // Sincroniza automaticamente com o formulário de envio da Etapa 7
+      const uploadTitleInput = $('#wf-upload-title');
+      if (uploadTitleInput) {
+        uploadTitleInput.value = res.seo.title || '';
+        if (typeof updateTitleCharCounter === 'function') updateTitleCharCounter();
+      }
+      const uploadDescInput = $('#wf-upload-description') || $('#wf-upload-desc');
+      if (uploadDescInput) {
+        uploadDescInput.value = formatYouTubeDescriptionSpacing(res.seo.description || '');
+        if (typeof updateDescCharCounter === 'function') updateDescCharCounter();
+      }
+      const uploadTagsInput = $('#wf-upload-tags');
+      if (uploadTagsInput) {
+        const rawTags = res.seo.tags || res.seo.hashtags || [];
+        uploadTagsInput.value = Array.isArray(rawTags)
+          ? rawTags.map(t => String(t).replace(/^#/, '').trim()).filter(Boolean).join(', ')
+          : String(rawTags).replace(/#/g, '');
+      }
+
+      // Se houver tema ativo no cronograma, salva imediatamente no banco de dados
+      if (currentTheme?.id) {
+        mutate(`/api/workflow/planned-themes/${encodeURIComponent(currentTheme.id)}`, 'PATCH', {
+          seo_data: res.seo
+        }).then(() => {
+          if (typeof loadWorkflowPlannedThemes === 'function') loadWorkflowPlannedThemes();
+        }).catch(() => {});
+      }
+
       scheduleAutoSaveDraft(100);
+      renderWorkflowActiveThemeCard();
+      updateWorkflowTopTimeline();
+      showToast('✓ Metadados de SEO atualizados e sincronizados com a Etapa de Envio!', 'success');
     }
   } catch (err) {
     showToast(`Erro ao gerar SEO: ${err.message}`, 'error');
@@ -7298,6 +8299,8 @@ function renderWorkflowSEO(seo) {
 
   container.classList.remove('hidden');
   container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  renderWorkflowActiveThemeCard();
+  updateWorkflowTopTimeline();
 }
 
 // Etapa 7: RESUMO PARA O PRÓXIMO ROTEIRO
@@ -7351,31 +8354,70 @@ function formatFileSize(bytes) {
 }
 
 // Upload de arquivo binário para o servidor local (/api/workflow/upload-file)
-async function uploadWorkflowAsset(file) {
+function uploadWorkflowAsset(file, onProgress) {
   const isVideo = file.type.startsWith('video/') || /\.(mp4|mov|avi|mkv|webm)$/i.test(file.name);
-  const loadingText = isVideo ? 'Enviando vídeo para o estúdio local...' : 'Carregando miniatura...';
-  
-  showToast(loadingText, 'info');
-  $('#loading').classList.add('active');
-  const headers = {
-    'x-file-name': encodeURIComponent(file.name),
-    'content-type': file.type || 'application/octet-stream'
-  };
-
-  try {
-    const res = await fetch('/api/workflow/upload-file', {
-      method: 'POST',
-      body: file,
-      headers
-    });
-    const data = await res.json();
-    if (!res.ok || !data.success) {
-      throw new Error(data.error || 'Falha no upload do arquivo');
-    }
-    return data;
-  } finally {
-    $('#loading').classList.remove('active');
+  if (!isVideo) {
+    showToast('Carregando miniatura...', 'info');
+    $('#loading')?.classList.add('active');
   }
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const startTime = Date.now();
+
+    xhr.upload.addEventListener('progress', (e) => {
+      if (e.lengthComputable && typeof onProgress === 'function') {
+        const percent = Math.min(100, Math.round((e.loaded / e.total) * 100));
+        const elapsedSec = Math.max(0.01, (Date.now() - startTime) / 1000);
+        const speed = e.loaded / elapsedSec;
+        onProgress({
+          loaded: e.loaded,
+          total: e.total,
+          percent,
+          speed,
+          elapsedSec
+        });
+      }
+    });
+
+    xhr.addEventListener('load', () => {
+      if (!isVideo) $('#loading')?.classList.remove('active');
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const data = JSON.parse(xhr.responseText);
+          if (data && data.success) {
+            resolve(data);
+          } else {
+            reject(new Error(data?.error || 'Falha no upload do arquivo'));
+          }
+        } catch (err) {
+          reject(new Error('Resposta inválida do servidor: ' + err.message));
+        }
+      } else {
+        let errDesc = 'Erro HTTP ' + xhr.status;
+        try {
+          const data = JSON.parse(xhr.responseText);
+          if (data && data.error) errDesc = data.error;
+        } catch (_) {}
+        reject(new Error(errDesc));
+      }
+    });
+
+    xhr.addEventListener('error', () => {
+      if (!isVideo) $('#loading')?.classList.remove('active');
+      reject(new Error('Erro de conexão ao enviar o arquivo para o servidor'));
+    });
+
+    xhr.addEventListener('abort', () => {
+      if (!isVideo) $('#loading')?.classList.remove('active');
+      reject(new Error('Upload cancelado pelo usuário'));
+    });
+
+    xhr.open('POST', '/api/workflow/upload-file');
+    xhr.setRequestHeader('x-file-name', encodeURIComponent(file.name));
+    xhr.setRequestHeader('content-type', file.type || 'application/octet-stream');
+    xhr.send(file);
+  });
 }
 
 // 1. Controle do Arquivo de Vídeo (.mp4)
@@ -7390,14 +8432,28 @@ const videoDropContent = $('#wf-video-drop-content');
 const videoSelectedBox = $('#wf-video-selected-box');
 const videoNameLabel = $('#wf-video-name');
 const videoSizeLabel = $('#wf-video-size');
+const videoUploadProgressBox = $('#wf-video-upload-progress');
+const videoProgressBar = $('#wf-video-progress-bar');
+const videoProgressPercent = $('#wf-video-progress-percent');
+const videoProgressElapsed = $('#wf-video-progress-elapsed');
+const videoProgressBytes = $('#wf-video-progress-bytes');
+const videoProgressSpeed = $('#wf-video-progress-speed');
+const videoProgressTitle = $('#wf-video-progress-title');
 
-chooseVideoBtn?.addEventListener('click', () => videoFileInput?.click());
+let isVideoUploading = false;
+
+chooseVideoBtn?.addEventListener('click', () => {
+  if (isVideoUploading) return;
+  videoFileInput?.click();
+});
 
 // Drag and Drop para vídeo
 if (videoDropZone) {
   videoDropZone.addEventListener('dragover', (e) => {
     e.preventDefault();
-    videoDropZone.classList.add('dragover');
+    if (!isVideoUploading) {
+      videoDropZone.classList.add('dragover');
+    }
   });
   videoDropZone.addEventListener('dragleave', () => {
     videoDropZone.classList.remove('dragover');
@@ -7405,6 +8461,7 @@ if (videoDropZone) {
   videoDropZone.addEventListener('drop', (e) => {
     e.preventDefault();
     videoDropZone.classList.remove('dragover');
+    if (isVideoUploading) return;
     if (e.dataTransfer?.files?.length) {
       handleSelectedVideoFile(e.dataTransfer.files[0]);
     }
@@ -7419,31 +8476,82 @@ videoFileInput?.addEventListener('change', (e) => {
 
 async function handleSelectedVideoFile(file) {
   if (!file) return;
+  if (isVideoUploading) {
+    showToast('Um vídeo já está sendo enviado. Aguarde a conclusão...', 'warning');
+    return;
+  }
   if (!file.type.startsWith('video/') && !/\.(mp4|mov|avi|mkv|webm)$/i.test(file.name)) {
     showToast('Por favor, selecione um arquivo de vídeo válido (.mp4).', 'error');
     return;
   }
 
-  showToast(`Carregando vídeo: "${file.name}" (${formatFileSize(file.size)})...`, 'info');
+  // Prepara exibição minimalista de carregamento
+  videoDropContent?.classList.add('hidden');
+  videoSelectedBox?.classList.add('hidden');
+  if (videoUploadProgressBox) {
+    videoUploadProgressBox.classList.remove('hidden');
+    if (videoProgressTitle) videoProgressTitle.textContent = `Enviando vídeo: ${file.name}`;
+    if (videoProgressBar) videoProgressBar.style.width = '0%';
+    if (videoProgressPercent) videoProgressPercent.textContent = '0%';
+    if (videoProgressElapsed) videoProgressElapsed.textContent = '⏱️ 00:00';
+    if (videoProgressBytes) videoProgressBytes.textContent = `0 MB / ${formatFileSize(file.size)}`;
+    if (videoProgressSpeed) videoProgressSpeed.textContent = 'Iniciando upload...';
+  }
+
+  isVideoUploading = true;
+  let elapsedTimer = null;
+  const startEpoch = Date.now();
+
+  elapsedTimer = setInterval(() => {
+    if (!isVideoUploading) {
+      clearInterval(elapsedTimer);
+      return;
+    }
+    const sec = Math.floor((Date.now() - startEpoch) / 1000);
+    const mm = String(Math.floor(sec / 60)).padStart(2, '0');
+    const ss = String(sec % 60).padStart(2, '0');
+    if (videoProgressElapsed) videoProgressElapsed.textContent = `⏱️ ${mm}:${ss}`;
+  }, 1000);
+
   try {
-    const uploadResult = await uploadWorkflowAsset(file);
+    const uploadResult = await uploadWorkflowAsset(file, (stats) => {
+      if (videoProgressBar) videoProgressBar.style.width = `${stats.percent}%`;
+      if (videoProgressPercent) videoProgressPercent.textContent = `${stats.percent}%`;
+      if (videoProgressBytes) {
+        videoProgressBytes.textContent = `${formatFileSize(stats.loaded)} / ${formatFileSize(stats.total)}`;
+      }
+      if (videoProgressSpeed) {
+        if (stats.speed > 0) {
+          videoProgressSpeed.textContent = `~${formatFileSize(stats.speed)}/s`;
+        } else {
+          videoProgressSpeed.textContent = 'Enviando...';
+        }
+      }
+    });
+
     if (uploadPathInput) uploadPathInput.value = uploadResult.filePath;
-    
     if (videoNameLabel) videoNameLabel.textContent = file.name;
     if (videoSizeLabel) videoSizeLabel.textContent = formatFileSize(file.size);
-    
-    videoDropContent?.classList.add('hidden');
+
+    videoUploadProgressBox?.classList.add('hidden');
     videoSelectedBox?.classList.remove('hidden');
     showToast('✓ Vídeo pronto para agendamento!', 'success');
   } catch (err) {
+    videoUploadProgressBox?.classList.add('hidden');
+    videoDropContent?.classList.remove('hidden');
     showToast(`Erro ao carregar vídeo: ${err.message}`, 'error');
+  } finally {
+    isVideoUploading = false;
+    if (elapsedTimer) clearInterval(elapsedTimer);
   }
 }
 
 removeVideoBtn?.addEventListener('click', () => {
+  if (isVideoUploading) return;
   if (videoFileInput) videoFileInput.value = '';
   if (uploadPathInput) uploadPathInput.value = '';
   videoSelectedBox?.classList.add('hidden');
+  videoUploadProgressBox?.classList.add('hidden');
   videoDropContent?.classList.remove('hidden');
 });
 
@@ -7546,19 +8654,34 @@ $('#wf-corte-no-thumb-btn')?.addEventListener('click', () => {
   showToast('✂️ Modo Corte/Short definido: o YouTube gerará a capa automaticamente!', 'info');
 });
 
+// Seleção de versão de capa do Nano Banana pelo usuário (Versão 1, 2 ou 3)
+document.addEventListener('click', (e) => {
+  const selectBtn = e.target.closest('.wf-select-nb-version-btn');
+  if (selectBtn) {
+    const ver = parseInt(selectBtn.dataset.nbVersion, 10);
+    wfState.selectedNanoBananaVersion = ver;
+    if (Array.isArray(wfState.nanoBananaPrompts)) {
+      renderNanoBananaVersions(wfState.nanoBananaPrompts);
+      showToast(`⭐ Versão ${ver} selecionada como Capa Oficial do vídeo!`, 'success');
+      scheduleAutoSaveDraft(100);
+    }
+  }
+});
+
 // Usar Capa gerada no Nano Banana
 useGeneratedThumbBtn?.addEventListener('click', () => {
   if (wfState.nanoBananaPrompts && wfState.nanoBananaPrompts.length > 0) {
-    const v1 = wfState.nanoBananaPrompts[0];
+    const selectedVer = wfState.selectedNanoBananaVersion || 1;
+    const chosen = wfState.nanoBananaPrompts.find(v => v.version === selectedVer) || wfState.nanoBananaPrompts[0];
     if (thumbStatusMsg) {
       thumbStatusMsg.innerHTML = `
-        <div style="background: rgba(255, 77, 94, 0.08); padding: 8px 12px; border-radius: 8px; border: 1px solid rgba(255, 77, 94, 0.2);">
-          <strong>✨ Versão do Nano Banana Selecionada:</strong> ${escapeHTML(v1.title || 'Versão 1')}<br>
-          <small style="color: var(--text-2);">Gere ou salve a arte final no Nano Banana e selecione o arquivo com o botão 'Buscar Imagem no Explorer'.</small>
+        <div style="background: rgba(16, 185, 129, 0.1); padding: 8px 12px; border-radius: 8px; border: 1px solid rgba(16, 185, 129, 0.3);">
+          <strong style="color: #6ee7b7;">✨ Capa Oficial Selecionada:</strong> ${escapeHTML(chosen.title || `Versão ${chosen.version}`)}<br>
+          <small style="color: var(--text-2);">Gere ou edite a arte no Nano Banana com este prompt e anexe a imagem (.png/.jpg) com o botão 'Buscar Imagem no Explorer'.</small>
         </div>
       `;
     }
-    showToast('Prompt do Nano Banana referenciado para a capa!', 'info');
+    showToast(`✓ Versão ${selectedVer} do Nano Banana vinculada para a capa!`, 'success');
   } else {
     showToast('Nenhuma versão de thumbnail gerada na Etapa 5 ainda.', 'warning');
   }
@@ -7592,10 +8715,22 @@ descInput?.addEventListener('input', updateDescCharCounter);
 
 // 4. Sincronização Automática com Etapa 6 (SEO) e Etapas Anteriores
 function pullSEODataIntoSchedule() {
+  const currentTheme = wfState.currentTheme || (Array.isArray(wfPlannedThemes) ? wfPlannedThemes.find(t => t.id === wfState.currentThemeId) : null);
+  const activeTopic = currentTheme ? currentTheme.topic : $('#wf-script-topic')?.value?.trim() || '';
+
+  // 🛡️ Blindagem Anti-Vazamento: Verifica se wfState.seo não é de um tema diferente anterior
+  if (wfState.seo && activeTopic && typeof calculateSimilarity === 'function') {
+    const seoTitle = wfState.seo.title || '';
+    if (seoTitle && calculateSimilarity(seoTitle, activeTopic) < 15) {
+      showToast('⚠️ O SEO na memória pertencia a outro vídeo anterior. Por favor, gere o SEO da Etapa 6 para este tema.', 'warning');
+      wfState.seo = null;
+    }
+  }
+
   let pulledCount = 0;
   
   // Título
-  const currentTitle = wfState.seo?.title || $('#wf-script-topic')?.value?.trim();
+  const currentTitle = wfState.seo?.title || activeTopic;
   if (currentTitle && titleInput) {
     titleInput.value = currentTitle;
     updateTitleCharCounter();
@@ -7638,9 +8773,27 @@ function pullSEODataIntoSchedule() {
 
   if (pulledCount > 0) {
     showToast('⚡ Título, descrição espaçada e tags preenchidos com os dados do SEO!', 'success');
+    scrollToScheduleSubmitButton();
   } else {
     showToast('Gere o roteiro e o SEO nas etapas anteriores para preenchimento automático.', 'warning');
   }
+}
+
+// Rola suavemente direto para o botão final de postagem após colar metadados
+function scrollToScheduleSubmitButton() {
+  setTimeout(() => {
+    const submitBtn = $('#wf-schedule-submit-btn');
+    if (submitBtn) {
+      submitBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      submitBtn.style.transition = 'box-shadow 0.35s ease, transform 0.25s ease';
+      submitBtn.style.boxShadow = '0 0 24px rgba(59, 130, 246, 0.85), 0 0 40px rgba(16, 185, 129, 0.5)';
+      submitBtn.style.transform = 'scale(1.02)';
+      setTimeout(() => {
+        submitBtn.style.boxShadow = '';
+        submitBtn.style.transform = '';
+      }, 1500);
+    }
+  }, 150);
 }
 
 $('#wf-sync-from-workflow-btn')?.addEventListener('click', pullSEODataIntoSchedule);
@@ -8007,26 +9160,38 @@ $('#wf-paste-clear-btn')?.addEventListener('click', () => {
 async function handlePasteFromClipboard() {
   const btn = $('#wf-paste-from-clipboard-btn');
   const targetArea = $('#wf-paste-raw-textarea') || pasteRawTextarea;
-  const originalHtml = btn ? btn.innerHTML : '';
+  const originalHtml = '📋 Colar do Clipboard';
   if (btn) {
     btn.disabled = true;
     btn.innerHTML = '⏳ Lendo...';
   }
+
+  // Função auxiliar com timeout rápido para nenhuma promise travar a interface
+  const withTimeout = (promise, ms = 1200) => {
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))
+    ]);
+  };
+
   try {
     let text = '';
-    // 1. Tenta API moderna do navegador
+    // 1. Tenta API moderna do navegador com timeout de 1.2s
     if (navigator.clipboard && typeof navigator.clipboard.readText === 'function') {
       try {
-        text = await navigator.clipboard.readText();
+        text = await withTimeout(navigator.clipboard.readText(), 1200);
       } catch (readErr) {
-        console.warn('Leitura via navigator.clipboard.readText não autorizada:', readErr);
+        console.warn('Leitura via navigator.clipboard.readText falhou ou timeout:', readErr);
       }
     }
 
-    // 2. Fallback via backend Windows (Get-Clipboard local do sistema)
+    // 2. Fallback via backend Windows (Get-Clipboard local do sistema) com timeout de 1.5s
     if (!text || !text.trim()) {
       try {
-        const res = await fetch('/api/clipboard/read');
+        const controller = new AbortController();
+        const tid = setTimeout(() => controller.abort(), 1500);
+        const res = await fetch('/api/clipboard/read', { signal: controller.signal });
+        clearTimeout(tid);
         const data = await res.json();
         if (data && data.success && data.text) {
           text = data.text;
@@ -8062,12 +9227,28 @@ async function handlePasteFromClipboard() {
   } finally {
     if (btn) {
       btn.disabled = false;
-      btn.innerHTML = originalHtml || '📋 Colar do Clipboard';
+      btn.innerHTML = originalHtml;
     }
   }
 }
 
 $('#wf-paste-from-clipboard-btn')?.addEventListener('click', handlePasteFromClipboard);
+
+// Garante que o botão nunca fique preso em "Lendo" ao fechar o diálogo
+pasteDialog?.addEventListener('close', () => {
+  const btn = $('#wf-paste-from-clipboard-btn');
+  if (btn) {
+    btn.disabled = false;
+    btn.innerHTML = '📋 Colar do Clipboard';
+  }
+});
+
+// Auto-processa quando o usuário simplesmente pressiona Ctrl+V na caixa
+pasteRawTextarea?.addEventListener('paste', () => {
+  setTimeout(() => {
+    processPastedMetadataText();
+  }, 60);
+});
 
 pasteTabBtn?.addEventListener('click', () => {
   if (pasteTabBtn) {
@@ -8182,6 +9363,7 @@ applyPastedMetadataBtn?.addEventListener('click', () => {
   revealMetadataFields(false);
   scheduleAutoSaveDraft(100);
   showToast('🎉 Metadados e agendamento aplicados nos campos oficiais com sucesso!', 'success');
+  scrollToScheduleSubmitButton();
 });
 
 
@@ -8259,9 +9441,12 @@ const scheduleProgressCtrl = {
     }, 400);
   },
 
+  autoDismissTimer: null,
+
   success(titleText) {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    if (this.autoDismissTimer) clearTimeout(this.autoDismissTimer);
 
     const card = $('#wf-schedule-progress-card');
     const bar = $('#wf-schedule-progress-bar');
@@ -8270,12 +9455,17 @@ const scheduleProgressCtrl = {
     const titleEl = $('#wf-schedule-progress-title');
     const spinner = $('#wf-schedule-spinner');
     const hintEl = $('#wf-schedule-progress-hint');
+    const closeBtn = $('#wf-close-progress-card-btn');
 
     if (card) {
+      card.style.opacity = '1';
+      card.style.transform = 'none';
+      card.style.transition = 'none';
       card.classList.remove('hidden', 'error');
       card.classList.add('completed');
     }
     if (spinner) spinner.style.display = 'none';
+    if (closeBtn) closeBtn.classList.remove('hidden');
     if (titleEl) {
       titleEl.innerHTML = '🎉 <span style="color: #10b981; font-weight: 700;">Vídeo Programado com Sucesso no Canal!</span>';
     }
@@ -8293,6 +9483,22 @@ const scheduleProgressCtrl = {
     if (hintEl) {
       hintEl.textContent = 'Confira os detalhes da publicação abaixo ou na fila de vídeos agendados.';
     }
+
+    // Limpeza automática após 6 segundos (com transição suave de saída)
+    this.autoDismissTimer = setTimeout(() => {
+      if (card && card.classList.contains('completed')) {
+        card.style.transition = 'opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1), transform 0.6s cubic-bezier(0.16, 1, 0.3, 1)';
+        card.style.opacity = '0';
+        card.style.transform = 'translateY(-6px)';
+        setTimeout(() => {
+          card.classList.add('hidden');
+          card.classList.remove('completed');
+          card.style.opacity = '';
+          card.style.transform = '';
+          if (closeBtn) closeBtn.classList.add('hidden');
+        }, 650);
+      }
+    }, 6000);
   },
 
   error(errMsg) {
@@ -8523,6 +9729,165 @@ async function handleOpenThemeTxtLog(theme) {
 $('#wf-export-txt-btn')?.addEventListener('click', handleExportProductionLog);
 $('#wf-export-txt-step7-btn')?.addEventListener('click', handleExportProductionLog);
 
+function normalizeFrontendText(text) {
+  if (!text) return '';
+  return text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/#[\wÀ-ÿ]+/g, ' ')
+    .replace(/[^\w\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getFrontendWordTokens(text) {
+  const stopWords = new Set([
+    'a', 'o', 'as', 'os', 'de', 'do', 'da', 'dos', 'das', 'em', 'no', 'na', 'nos', 'nas',
+    'por', 'para', 'com', 'sem', 'sob', 'sobre', 'que', 'e', 'ou', 'se', 'um', 'uma',
+    'di', 'da', 'del', 'della', 'dei', 'degli', 'delle', 'in', 'il', 'lo', 'la', 'i', 'gli', 'le',
+    'un', 'uno', 'una', 'che', 'con', 'per', 'su', 'tra', 'fra', 'the', 'of', 'and', 'to', 'is', 'in',
+    'nel', 'nella', 'nei', 'nelle', 'dallo', 'dalla', 'dai', 'dagli', 'dalle', 'come', 'cosa', 'perche'
+  ]);
+  return normalizeFrontendText(text)
+    .split(' ')
+    .filter(w => w.length > 2 && !stopWords.has(w));
+}
+
+function calculateFrontendSimilarity(textA, textB) {
+  const normA = normalizeFrontendText(textA);
+  const normB = normalizeFrontendText(textB);
+  if (!normA || !normB) return 0;
+  if (normA === normB) return 100;
+
+  const tokensA = getFrontendWordTokens(textA);
+  const tokensB = getFrontendWordTokens(textB);
+  if (!tokensA.length || !tokensB.length) return 0;
+
+  const setB = new Set(tokensB);
+  const intersection = tokensA.filter(w => setB.has(w));
+  const union = new Set([...tokensA, ...tokensB]);
+
+  const jaccard = intersection.length / union.size;
+  const overlapA = intersection.length / tokensA.length;
+  const overlapB = intersection.length / tokensB.length;
+  const score = Math.max(jaccard, (overlapA + overlapB) / 2);
+
+  return Math.round(score * 100);
+}
+
+const COMMON_EDITORIAL_WORDS_FRONTEND = new Set([
+  'era', 'stato', 'stata', 'stati', 'state', 'sono', 'essere', 'avere', 'aveva', 'hanno',
+  'dettaglio', 'dettagli', 'segreto', 'segreti', 'mistero', 'misteri', 'storia', 'storie',
+  'verita', 'fede', 'bibbia', 'biblico', 'biblica', 'biblici', 'bibliche', 'vangelo', 'vangeli',
+  'dio', 'gesu', 'signore', 'cristo', 'preghiera', 'preghiere', 'rivelazione', 'rivelazioni',
+  'testo', 'testi', 'antico', 'antica', 'antichi', 'antiche', 'nuovo', 'nuova', 'nuovi', 'nuove',
+  'testamento', 'testamenti', 'capitolo', 'capitoli', 'versetto', 'versetti',
+  'parola', 'parole', 'vita', 'vite', 'mondo', 'mondi', 'tempo', 'tempi', 'giorno', 'giorni',
+  'luce', 'buio', 'notte', 'ombra', 'presente', 'presenti', 'passato', 'futuro',
+  'cosa', 'come', 'quando', 'perche', 'dove', 'chi', 'quale', 'quali', 'quanto',
+  'tutto', 'tutti', 'tutta', 'tutte', 'ogni', 'nessuno', 'nessuna',
+  'molto', 'molti', 'poco', 'pochi', 'grande', 'grandi', 'primo', 'prima', 'primi', 'prime',
+  'ultimo', 'ultima', 'ultimi', 'ultime', 'vero', 'vera', 'veri', 'vere',
+  'fatto', 'fatti', 'senso', 'significato', 'risposta', 'domanda',
+  'shorts', 'short', 'video', 'canale', 'documentario', 'guida', 'studio', 'youtube',
+  'detalhe', 'detalhes', 'segredo', 'segredos', 'misterio', 'misterios', 'verdade', 'oracao'
+]);
+
+function checkThemeMetadataLeakageFrontend({
+  activeTopic = '',
+  newTitle = '',
+  newDescription = '',
+  existingThemes = [],
+  excludeId = null
+}) {
+  const issues = [];
+  const normActiveTopic = normalizeFrontendText(activeTopic);
+  const normTitle = normalizeFrontendText(newTitle);
+  const normDesc = normalizeFrontendText(newDescription);
+  const activeTokens = getFrontendWordTokens(activeTopic);
+  const titleTokens = getFrontendWordTokens(newTitle);
+
+  // 1. Verificação de Coerência entre o Título e o Tema Ativo
+  if (normActiveTopic && normTitle) {
+    const similarity = calculateFrontendSimilarity(activeTopic, newTitle);
+    const sharedTokens = titleTokens.filter(t => activeTokens.includes(t));
+
+    if (similarity < 15 && sharedTokens.length === 0) {
+      issues.push({
+        type: 'title_topic_mismatch',
+        severity: 'block',
+        message: `O título inserido ("${newTitle}") não possui nenhuma relação com o tema ativo deste vídeo ("${activeTopic}"). Verifique se não restaram dados do dia anterior.`
+      });
+    }
+  }
+
+  // 2. Verificação de Vazamento de Temas Anteriores na Descrição
+  if (Array.isArray(existingThemes) && existingThemes.length > 0) {
+    for (const item of existingThemes) {
+      if (!item) continue;
+      if (excludeId && String(item.id) === String(excludeId)) continue;
+
+      const otherTopic = item.topic || item.title || '';
+      const normOther = normalizeFrontendText(otherTopic);
+      if (!normOther || normOther.length < 10) continue;
+
+      const otherDiffersFromActive = !normActiveTopic || calculateFrontendSimilarity(activeTopic, otherTopic) < 50;
+
+      if (otherDiffersFromActive) {
+        // Frase núcleo limpa sem hashtags ou caracteres especiais
+        const cleanOtherCore = otherTopic.replace(/#[\wÀ-ÿ]+/g, ' ').replace(/[^\p{L}\p{N}\s]/gu, ' ').trim();
+        const normCleanOther = normalizeFrontendText(cleanOtherCore);
+
+        // 1. Vazamento Verbatim (Frase contínua substancial):
+        const otherPhraseCore = normCleanOther.slice(0, Math.min(normCleanOther.length, 38)).trim();
+        const isVerbatimLeak = otherPhraseCore.length >= 22 &&
+          normDesc.includes(otherPhraseCore) &&
+          (!normActiveTopic || !normActiveTopic.includes(otherPhraseCore));
+
+        // 2. Vazamento por Entidades Específicas / Nomes Próprios Exclusivos:
+        const otherTokens = getFrontendWordTokens(otherTopic);
+        const otherDistinctiveEntities = otherTokens.filter(t =>
+          t.length >= 4 &&
+          !COMMON_EDITORIAL_WORDS_FRONTEND.has(t) &&
+          !activeTokens.includes(t)
+        );
+
+        const matchingEntitiesInDesc = otherDistinctiveEntities.filter(t => normDesc.includes(t));
+        const isEntityLeak = otherDistinctiveEntities.length >= 2 &&
+          matchingEntitiesInDesc.length >= 2 &&
+          matchingEntitiesInDesc.length >= Math.ceil(otherDistinctiveEntities.length * 0.7);
+
+        if (isVerbatimLeak || isEntityLeak) {
+          const itemDate = item.scheduled_date ? ` (do dia ${item.scheduled_date})` : '';
+          issues.push({
+            type: 'description_theme_leakage',
+            severity: 'block',
+            message: `A descrição menciona expressamente o tema de outro vídeo${itemDate}: "${otherTopic}". Ela pertence a outra produção e causará inconsistência grave no YouTube!`
+          });
+          break;
+        }
+
+        if (normTitle && (normTitle === normOther || calculateFrontendSimilarity(newTitle, otherTopic) >= 85)) {
+          const itemDate = item.scheduled_date ? ` (agendado para ${item.scheduled_date})` : '';
+          issues.push({
+            type: 'title_copied_from_other',
+            severity: 'block',
+            message: `O título é idêntico ao de outro vídeo${itemDate}: "${otherTopic}". O vídeo ativo é "${activeTopic}".`
+          });
+          break;
+        }
+      }
+    }
+  }
+
+  return {
+    isClean: issues.length === 0,
+    hasBlockingIssue: issues.some(i => i.severity === 'block'),
+    issues
+  };
+}
+
 $('#wf-schedule-form')?.addEventListener('submit', async (e) => {
   e.preventDefault();
   const videoPath = uploadPathInput?.value?.trim();
@@ -8548,6 +9913,39 @@ $('#wf-schedule-form')?.addEventListener('submit', async (e) => {
     showToast('Escolha a data e hora de publicação.', 'error');
     $('#wf-upload-time')?.focus();
     return;
+  }
+
+  // 🛡️ CHECK-UP AUTOMÁTICO ANTI-VAZAMENTO ENTRE TEMAS E DATAS
+  const currentTheme = wfState.currentTheme || (Array.isArray(wfPlannedThemes) ? wfPlannedThemes.find(t => t.id === wfState.currentThemeId) : null);
+  const activeTopic = currentTheme?.topic || $('#wf-script-topic')?.value?.trim() || '';
+  const uploadFormat = $('#wf-upload-format')?.value || wfCurrentUploadFormat || 'explainer';
+  const isUploadingShort = uploadFormat === 'short' || wfStudioMode === 'cortes' || /#shorts?/i.test(title || '');
+
+  if (!isUploadingShort && activeTopic) {
+    const leakCheck = checkThemeMetadataLeakageFrontend({
+      activeTopic,
+      newTitle: title,
+      newDescription: description,
+      existingThemes: wfPlannedThemes || [],
+      excludeId: currentTheme?.id || wfState.currentThemeId
+    });
+
+    if (leakCheck.hasBlockingIssue) {
+      const issue = leakCheck.issues[0];
+      const cancelSubmission = confirm(
+        `🚨 ALERTA CRÍTICO DE INCONSISTÊNCIA DETECTADO!\n\n` +
+        `${issue.message}\n\n` +
+        `• Tema do Vídeo em Produção: "${activeTopic}"\n` +
+        `• Título Inserido: "${title}"\n\n` +
+        `Deseja CANCELAR O ENVIO para gerar ou alinhar os metadados com o tema correto na Etapa 6?\n\n` +
+        `[OK = Cancelar e Corrigir (Recomendado)]\n[Cancelar = Forçar envio mesmo com inconsistência]`
+      );
+      if (cancelSubmission) {
+        showToast('Agendamento pausado para correção dos metadados.', 'warning');
+        $('#wf-step-6-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        return;
+      }
+    }
   }
 
   const tags = tagsRaw.split(',').map(t => t.trim()).filter(Boolean);
@@ -8577,11 +9975,12 @@ $('#wf-schedule-form')?.addEventListener('submit', async (e) => {
     language
   });
 
-  const uploadFormat = $('#wf-upload-format')?.value || wfCurrentUploadFormat || 'explainer';
-  const isUploadingShort = uploadFormat === 'short' || wfStudioMode === 'cortes' || /#shorts?/i.test(title || '');
   let matchedShortThemeId = null;
 
   try {
+    const isResendMode = Boolean(wfState.resendMode?.active);
+    const replaceVideoId = wfState.resendMode?.replaceVideoId || null;
+
     const postRes = await mutate('/api/workflow/schedule-upload', 'POST', {
       videoPath,
       thumbnailPath,
@@ -8592,6 +9991,8 @@ $('#wf-schedule-form')?.addEventListener('submit', async (e) => {
       containsSyntheticMedia,
       language,
       format: isUploadingShort ? 'short' : uploadFormat,
+      forceDuplicate: isResendMode ? true : undefined,
+      replaceVideoId: replaceVideoId,
       themeId: (() => {
         // Se estiver no modo Envio de Cortes ou enviando um Short, NUNCA vincula ao tema longo do estúdio
         if (isUploadingShort) {
@@ -8715,6 +10116,12 @@ $('#wf-schedule-form')?.addEventListener('submit', async (e) => {
       });
       $('#wf-start-next-production-btn')?.addEventListener('click', () => {
         $('#wf-schedule-status')?.classList.add('hidden');
+        resetWorkflowStudio({ keepFieldA: true, preserveTopic: '', preserveLog: true, notify: false });
+        renderWorkflowActiveThemeCard();
+        updateWorkflowTopTimeline();
+        if (typeof renderActiveProductionsBar === 'function') {
+          renderActiveProductionsBar();
+        }
         const step1 = $('#wf-step-1-panel') || $('#wf-script-topic');
         step1?.scrollIntoView({ behavior: 'smooth', block: 'start' });
         $('#wf-script-topic')?.focus();
@@ -8735,6 +10142,7 @@ $('#wf-schedule-form')?.addEventListener('submit', async (e) => {
       const videoFileInput = $('#wf-video-file-input');
       if (videoFileInput) videoFileInput.value = '';
       $('#wf-video-selected-box')?.classList.add('hidden');
+      $('#wf-video-upload-progress')?.classList.add('hidden');
       $('#wf-video-drop-content')?.classList.remove('hidden');
 
       const thumbFileInput = $('#wf-thumb-file-input');
@@ -8761,6 +10169,9 @@ $('#wf-schedule-form')?.addEventListener('submit', async (e) => {
       // Oculta a caixa de metadados aberta e volta a exibir o hero de colagem limpo
       collapseMetadataFields();
       resetPasteModal();
+      if (wfState.resendMode?.active) {
+        cancelResendMode();
+      }
 
       showToast('✓ Short programado com sucesso! Dados limpos para o próximo envio.', 'success');
 
@@ -8776,55 +10187,53 @@ $('#wf-schedule-form')?.addEventListener('submit', async (e) => {
     } else {
       // =========================================================================
       // Foi postado o VÍDEO LONGO oficial:
-      // Agora sim limpa o rascunho do estúdio pois a produção completa foi finalizada.
+      // Atualiza o status do tema para 'posted', descarta todos os rascunhos e
+      // limpa 100% o Estúdio para deixar a página livre para o próximo vídeo!
       // =========================================================================
+      const postedThemeId = wfState.resendMode?.themeId || wfState.currentThemeId;
+
+      if (wfState.currentTheme) {
+        wfState.currentTheme.status = 'posted';
+        if (postRes?.theme) {
+          Object.assign(wfState.currentTheme, postRes.theme);
+        }
+      }
+
+      // Atualiza o tema na lista em memória para garantir que não apareça mais como pendente ou em produção
+      if (Array.isArray(wfPlannedThemes) && postedThemeId) {
+        const targetT = wfPlannedThemes.find(t => t.id === postedThemeId);
+        if (targetT) {
+          targetT.status = 'posted';
+          if (postRes?.youtubeUrl) targetT.published_url = postRes.youtubeUrl;
+        }
+      }
+
       clearWorkflowDraft(false);
+      hideDraftRecoveryBanner();
       try {
         localStorage.removeItem('wf_last_active_theme_id');
         localStorage.removeItem(WF_DRAFT_STORAGE_KEY);
+        if (postedThemeId) {
+          localStorage.removeItem(`wf_draft_theme_${postedThemeId}`);
+        }
         if (wfState.currentThemeId) {
           localStorage.removeItem(`wf_draft_theme_${wfState.currentThemeId}`);
         }
+        if (wfState.resendMode?.themeId) {
+          localStorage.removeItem(`wf_draft_theme_${wfState.resendMode.themeId}`);
+        }
       } catch (_) {}
 
+      // Limpeza imediata e completa de todo o estúdio, mantendo apenas o banner de log salvo
       resetWorkflowStudio({ keepFieldA: true, preserveTopic: '', preserveLog: true, notify: false });
 
-      if (uploadPathInput) uploadPathInput.value = '';
-      const videoFileInput = $('#wf-video-file-input');
-      if (videoFileInput) videoFileInput.value = '';
-      $('#wf-video-selected-box')?.classList.add('hidden');
-      $('#wf-video-drop-content')?.classList.remove('hidden');
-
-      const thumbFileInput = $('#wf-thumb-file-input');
-      const thumbPathInput = $('#wf-upload-thumbnail-path');
-      const thumbImgPreview = $('#wf-thumb-img-preview');
-      const thumbPlaceholder = $('#wf-thumb-placeholder');
-      const removeThumbBtn = $('#wf-remove-thumb-btn');
-      if (thumbFileInput) thumbFileInput.value = '';
-      if (thumbPathInput) thumbPathInput.value = '';
-      if (thumbImgPreview) { thumbImgPreview.src = ''; thumbImgPreview.classList.add('hidden'); }
-      if (thumbPlaceholder) thumbPlaceholder.classList.remove('hidden');
-      removeThumbBtn?.classList.add('hidden');
-      if ($('#wf-thumb-status-msg')) $('#wf-thumb-status-msg').textContent = '';
-
-      if (titleInput) { titleInput.value = ''; updateTitleCharCounter(); }
-      if (descInput) { descInput.value = ''; updateDescCharCounter(); }
-      const tagsInp = $('#wf-upload-tags');
-      if (tagsInp) tagsInp.value = '';
-
-      const timeInp = $('#wf-upload-time');
-      if (timeInp) {
-        const tomorrow18 = new Date();
-        tomorrow18.setDate(tomorrow18.getDate() + 1);
-        tomorrow18.setHours(18, 0, 0, 0);
-        timeInp.value = typeof formatLocalDateToIsoMinute === 'function' ? formatLocalDateToIsoMinute(tomorrow18) : '';
+      if (wfState.resendMode?.active) {
+        cancelResendMode();
       }
-
-      collapseMetadataFields();
-      resetPasteModal();
     }
 
     renderWorkflowActiveThemeCard();
+    updateWorkflowTopTimeline();
     if (typeof renderActiveProductionsBar === 'function') {
       renderActiveProductionsBar();
     }
@@ -8838,6 +10247,11 @@ $('#wf-schedule-form')?.addEventListener('submit', async (e) => {
 
     await refreshDashboard(true);
     await loadWorkflowPlannedThemes();
+    renderWorkflowActiveThemeCard();
+    updateWorkflowTopTimeline();
+    if (typeof renderActiveProductionsBar === 'function') {
+      renderActiveProductionsBar();
+    }
   } catch (err) {
     scheduleProgressCtrl.error(err.message);
     showToast(`Erro ao programar vídeo: ${err.message}`, 'error');
@@ -8882,7 +10296,8 @@ $('#wf-schedule-form')?.addEventListener('submit', async (e) => {
   $('#wf-use-generated-thumb-btn'),
   $('#wf-corte-no-thumb-btn'),
   $('#wf-sync-from-workflow-btn'),
-  $('#wf-pull-seo-btn')
+  $('#wf-pull-seo-btn'),
+  $('#wf-close-progress-card-btn')
 ].forEach(btnEl => {
   btnEl?.addEventListener('click', hideScheduleStatusBanner);
 });
@@ -9042,12 +10457,48 @@ setInterval(() => {
 
 // ====================================================
 // Gerenciamento do Modo "Envio de Cortes" e Formato
+// Isolamento Total de Produções (Vídeo Longo vs Cortes)
 // ====================================================
+let wfLongVideoUploadDraft = null;
+let wfCortesDraft = null;
+
 function setWorkflowStudioMode(mode = 'full', scrollToStep8 = false) {
-  // Se está alternando do modo Estúdio Completo para Envio de Cortes e há um vídeo longo em edição, salva imediatamente seu rascunho
-  if (wfStudioMode === 'full' && mode === 'cortes' && (wfState.currentThemeId || wfState.script)) {
+  const previousMode = wfStudioMode;
+
+  // 1. ISOLAMENTO: Quando sai do modo anterior, armazena seus dados específicos
+  if (previousMode === 'full' && mode === 'cortes') {
+    // Salva rascunho completo do vídeo longo ativo (roteiro, blocos, prompts)
+    if (wfState.currentThemeId || wfState.script) {
+      try {
+        saveWorkflowDraft(false);
+      } catch (_) {}
+    }
+    // Armazena campos de upload específicos do vídeo longo
+    wfLongVideoUploadDraft = {
+      title: $('#wf-upload-title')?.value || '',
+      desc: $('#wf-upload-description')?.value || $('#wf-upload-desc')?.value || '',
+      tags: $('#wf-upload-tags')?.value || '',
+      time: $('#wf-upload-time')?.value || '',
+      videoPath: $('#wf-upload-path')?.value || '',
+      thumbPath: $('#wf-upload-thumbnail-path')?.value || '',
+      format: 'explainer'
+    };
     try {
-      saveWorkflowDraft(false);
+      localStorage.setItem('wf_long_video_upload_backup', JSON.stringify(wfLongVideoUploadDraft));
+    } catch (_) {}
+  } else if (previousMode === 'cortes' && mode === 'full') {
+    // Armazena campos do corte para não perder caso o usuário queira voltar
+    wfCortesDraft = {
+      title: $('#wf-upload-title')?.value || '',
+      desc: $('#wf-upload-description')?.value || $('#wf-upload-desc')?.value || '',
+      tags: $('#wf-upload-tags')?.value || '',
+      time: $('#wf-upload-time')?.value || '',
+      videoPath: $('#wf-upload-path')?.value || '',
+      thumbPath: $('#wf-upload-thumbnail-path')?.value || '',
+      format: 'short'
+    };
+    try {
+      localStorage.setItem('wf_cortes_draft', JSON.stringify(wfCortesDraft));
     } catch (_) {}
   }
 
@@ -9057,13 +10508,60 @@ function setWorkflowStudioMode(mode = 'full', scrollToStep8 = false) {
   const btnCortes = $('#wf-mode-tab-cortes');
   const indicator = $('#wf-mode-indicator-text');
 
+  const tInp = $('#wf-upload-title');
+  const dInp = $('#wf-upload-description') || $('#wf-upload-desc');
+  const tagInp = $('#wf-upload-tags');
+  const timeInp = $('#wf-upload-time');
+  const pathInp = $('#wf-upload-path');
+  const thumbPathInp = $('#wf-upload-thumbnail-path');
+  const videoFileInp = $('#wf-video-file-input');
+  const thumbFileInp = $('#wf-thumb-file-input');
+  const thumbImgPreview = $('#wf-thumb-img-preview');
+  const thumbPlaceholder = $('#wf-thumb-placeholder');
+
   if (mode === 'cortes') {
     workflowView?.classList.add('studio-mode-cortes');
     btnFull?.classList.remove('active');
     btnCortes?.classList.add('active');
     if (indicator) {
-      indicator.innerHTML = 'Visualizando: <strong>Envio de Cortes</strong> (Tela limpa focada apenas na postagem rápida de Shorts)';
+      indicator.innerHTML = 'Visualizando: <strong>Envio de Cortes</strong> (Produção isolada: tela limpa focada apenas na postagem rápida de Shorts)';
     }
+
+    // Carrega rascunho isolado de cortes ou limpa 100% os campos
+    const cutsData = wfCortesDraft || (function() {
+      try {
+        const s = localStorage.getItem('wf_cortes_draft');
+        return s ? JSON.parse(s) : null;
+      } catch (_) { return null; }
+    })() || { title: '', desc: '', tags: '', time: '', videoPath: '', thumbPath: '' };
+
+    if (tInp) tInp.value = cutsData.title || '';
+    if (dInp) dInp.value = cutsData.desc || '';
+    if (tagInp) tagInp.value = cutsData.tags || '';
+    if (timeInp) timeInp.value = cutsData.time || '';
+    if (pathInp) pathInp.value = cutsData.videoPath || '';
+    if (videoFileInp && !cutsData.videoPath) videoFileInp.value = '';
+    if (thumbPathInp) thumbPathInp.value = cutsData.thumbPath || '';
+    if (thumbFileInp && !cutsData.thumbPath) thumbFileInp.value = '';
+
+    // Atualiza preview de miniatura (Shorts geralmente não necessita de capa obrigatória)
+    if (cutsData.thumbPath && thumbImgPreview) {
+      thumbImgPreview.src = cutsData.thumbPath;
+      thumbImgPreview.classList.remove('hidden');
+      if (thumbPlaceholder) thumbPlaceholder.classList.add('hidden');
+    } else {
+      if (thumbImgPreview) { thumbImgPreview.src = ''; thumbImgPreview.classList.add('hidden'); }
+      if (thumbPlaceholder) thumbPlaceholder.classList.remove('hidden');
+    }
+
+    if (!cutsData.title && !cutsData.desc) {
+      collapseMetadataFields();
+    } else {
+      revealMetadataFields(false);
+    }
+    if (typeof updateTitleCharCounter === 'function') updateTitleCharCounter();
+    if (typeof updateDescCharCounter === 'function') updateDescCharCounter();
+
     setWorkflowUploadFormat('short');
   } else {
     workflowView?.classList.remove('studio-mode-cortes');
@@ -9072,21 +10570,64 @@ function setWorkflowStudioMode(mode = 'full', scrollToStep8 = false) {
     if (indicator) {
       indicator.innerHTML = 'Visualizando: <strong>Estúdio Completo</strong> (Planejamento, Roteiro, Narração, Imagens e Postagem)';
     }
-    setWorkflowUploadFormat('explainer');
 
-    // Restaura metadados do vídeo longo oficial ativo se os campos estiverem vazios
+    // Restaura metadados do vídeo longo oficial ativo com verificação de compatibilidade
     const currentTheme = wfState.currentTheme || (Array.isArray(wfPlannedThemes) ? wfPlannedThemes.find(t => t.id === wfState.currentThemeId) : null);
-    const tInp = $('#wf-upload-title');
-    const timeInp = $('#wf-upload-time');
-    if (currentTheme) {
-      if (tInp && !tInp.value) {
-        tInp.value = currentTheme.topic || '';
-        if (typeof updateTitleCharCounter === 'function') updateTitleCharCounter();
+    const activeTopic = currentTheme ? currentTheme.topic : '';
+
+    const longData = wfLongVideoUploadDraft || (function() {
+      try {
+        const s = localStorage.getItem('wf_long_video_upload_backup');
+        return s ? JSON.parse(s) : null;
+      } catch (_) { return null; }
+    })() || {};
+
+    // 🛡️ Blindagem: Só reaproveita longData se o título pertencer ao tema atual!
+    const isMatchingLongData = activeTopic && longData.title && (
+      longData.title.toLowerCase().includes(activeTopic.toLowerCase().slice(0, 15)) ||
+      activeTopic.toLowerCase().includes(longData.title.toLowerCase().slice(0, 15)) ||
+      (typeof calculateSimilarity === 'function' && calculateSimilarity(longData.title, activeTopic) >= 20)
+    );
+
+    if (tInp) {
+      if (isMatchingLongData && longData.title) {
+        tInp.value = longData.title;
+      } else {
+        tInp.value = activeTopic || '';
       }
-      if (timeInp && !timeInp.value && currentTheme.scheduled_date && currentTheme.scheduled_time) {
+      if (typeof updateTitleCharCounter === 'function') updateTitleCharCounter();
+    }
+    if (dInp) {
+      dInp.value = isMatchingLongData ? (longData.desc || '') : '';
+      if (typeof updateDescCharCounter === 'function') updateDescCharCounter();
+    }
+    if (tagInp) tagInp.value = isMatchingLongData ? (longData.tags || '') : '';
+    if (timeInp) {
+      if (isMatchingLongData && longData.time) {
+        timeInp.value = longData.time;
+      } else if (currentTheme && currentTheme.scheduled_date && currentTheme.scheduled_time) {
         timeInp.value = `${currentTheme.scheduled_date}T${currentTheme.scheduled_time}`;
       }
     }
+    if (pathInp) pathInp.value = isMatchingLongData ? (longData.videoPath || '') : '';
+    if (thumbPathInp) thumbPathInp.value = isMatchingLongData ? (longData.thumbPath || '') : '';
+
+    if (isMatchingLongData && longData.thumbPath && thumbImgPreview) {
+      thumbImgPreview.src = longData.thumbPath;
+      thumbImgPreview.classList.remove('hidden');
+      if (thumbPlaceholder) thumbPlaceholder.classList.add('hidden');
+    } else {
+      if (thumbImgPreview) { thumbImgPreview.src = ''; thumbImgPreview.classList.add('hidden'); }
+      if (thumbPlaceholder) thumbPlaceholder.classList.remove('hidden');
+    }
+
+    if (tInp?.value || dInp?.value) {
+      revealMetadataFields(false);
+    } else {
+      collapseMetadataFields();
+    }
+
+    setWorkflowUploadFormat('explainer');
   }
 
   if (scrollToStep8) {
@@ -9094,8 +10635,43 @@ function setWorkflowStudioMode(mode = 'full', scrollToStep8 = false) {
       $('#wf-step-8-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 120);
   }
+
+  if (typeof updateCortesTopButtonText === 'function') {
+    updateCortesTopButtonText();
+  }
 }
 window.setWorkflowStudioMode = setWorkflowStudioMode;
+
+function updateCortesTopButtonText() {
+  const btn = $('#btn-envio-cortes-top');
+  if (!btn) return;
+  btn.style.whiteSpace = 'nowrap';
+  btn.style.flexShrink = '0';
+  btn.style.lineHeight = '1';
+
+  if (ui.currentView === 'workflow') {
+    if (wfStudioMode === 'cortes') {
+      btn.innerHTML = '🎬 Estúdio Completo';
+      btn.style.borderColor = 'rgba(59, 130, 246, 0.45)';
+      btn.style.background = 'rgba(59, 130, 246, 0.12)';
+      btn.style.color = '#60a5fa';
+      btn.title = 'Alternar para o Estúdio Completo (Roteiro, Narração, Imagens e Postagem)';
+    } else {
+      btn.innerHTML = '⚡ Envio de Cortes';
+      btn.style.borderColor = 'rgba(244, 63, 94, 0.45)';
+      btn.style.background = 'rgba(244, 63, 94, 0.12)';
+      btn.style.color = '#f43f5e';
+      btn.title = 'Alternar para tela limpa focada apenas na postagem de Cortes/Shorts';
+    }
+  } else {
+    btn.innerHTML = '⚡ Envio de Cortes';
+    btn.style.borderColor = 'rgba(244, 63, 94, 0.45)';
+    btn.style.background = 'rgba(244, 63, 94, 0.12)';
+    btn.style.color = '#f43f5e';
+    btn.title = 'Abrir tela limpa focada apenas na postagem de cortes/shorts';
+  }
+}
+window.updateCortesTopButtonText = updateCortesTopButtonText;
 
 function revealMetadataFields(focusTitle = false) {
   const hero = $('#wf-metadata-paste-hero');
@@ -9169,8 +10745,14 @@ window.setWorkflowUploadFormat = setWorkflowUploadFormat;
 
 // Listeners dos botões de alternância de modo
 $('#btn-envio-cortes-top')?.addEventListener('click', () => {
-  switchView('workflow');
-  setWorkflowStudioMode('cortes', true);
+  if (ui.currentView === 'workflow') {
+    const targetMode = wfStudioMode === 'cortes' ? 'full' : 'cortes';
+    setWorkflowStudioMode(targetMode, targetMode === 'cortes');
+  } else {
+    switchView('workflow');
+    setWorkflowStudioMode('cortes', true);
+  }
+  updateCortesTopButtonText();
 });
 
 $('#wf-mode-tab-full')?.addEventListener('click', () => {
@@ -9262,4 +10844,21 @@ $('#wf-show-optional-thumb-btn')?.addEventListener('click', () => {
 if (typeof wfCurrentUploadFormat === 'undefined' || wfCurrentUploadFormat !== 'short') {
   setWorkflowUploadFormat('explainer');
 }
+
+// Inicialização e sincronização do timeline superior
+window.addEventListener('hashchange', () => {
+  if (typeof updateWorkflowTopTimeline === 'function') {
+    updateWorkflowTopTimeline();
+  }
+});
+
+setTimeout(() => {
+  if (typeof updateWorkflowTopTimeline === 'function') {
+    updateWorkflowTopTimeline();
+  }
+  if (typeof attachWorkflowTopTimelineListeners === 'function') {
+    attachWorkflowTopTimelineListeners();
+  }
+}, 120);
+
 

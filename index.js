@@ -1867,52 +1867,106 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
         const status = req.query.status || null;
         const format = req.query.format || null;
 
-        // Auto-sincronização com o publish_schedule para garantir que nenhum vídeo agendado/postado falte
+        // Auto-sincronização com o publish_schedule para garantir que nenhum vídeo agendado/postado falte ou fique com formato errado
         try {
           const scheduledEntries = await this.db.getAllRows(
-            "SELECT id, title, publish_time, youtube_url, status FROM publish_schedule WHERE status IN ('scheduled', 'published') ORDER BY publish_time DESC"
+            "SELECT id, title, publish_time, youtube_url, status, metadata FROM publish_schedule WHERE status IN ('scheduled', 'published') ORDER BY (CASE WHEN youtube_url IS NOT NULL THEN 1 ELSE 0 END) DESC, publish_time DESC"
           );
           if (Array.isArray(scheduledEntries) && scheduledEntries.length > 0) {
             const currentThemes = await this.db.listPlannedThemes({ channelId });
-            for (const item of scheduledEntries) {
-              const cleanItemTitle = (item.title || '').replace(/^["']|["']$/g, '').trim().toLowerCase();
-              if (!cleanItemTitle) continue;
-              const alreadyExists = currentThemes.some(t => {
-                const tTopic = (t.topic || '').trim().toLowerCase();
-                const sameUrl = item.youtube_url && (t.published_url === item.youtube_url || t.publishedUrl === item.youtube_url);
-                const sameTitle = tTopic === cleanItemTitle || cleanItemTitle.includes(tTopic) || tTopic.includes(cleanItemTitle);
-                return sameUrl || sameTitle;
-              });
+            const processedTitlesByDate = new Set();
 
-              if (!alreadyExists) {
-                let targetDate = null;
-                let targetTime = null;
-                if (item.publish_time) {
-                  try {
-                    const d = new Date(item.publish_time);
-                    if (!isNaN(d.getTime())) {
-                      const fDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit' });
-                      const fTime = new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit', hour12: false });
-                      targetDate = fDate.format(d);
-                      targetTime = fTime.format(d);
-                    } else {
-                      targetDate = String(item.publish_time).split('T')[0].split(' ')[0];
-                    }
-                  } catch (_e) {
+            for (const item of scheduledEntries) {
+              const cleanItemTitle = (item.title || '').replace(/^["']|["']$/g, '').trim();
+              if (!cleanItemTitle) continue;
+              const cleanTitleLower = cleanItemTitle.toLowerCase();
+
+              let targetDate = null;
+              let targetTime = null;
+              if (item.publish_time) {
+                try {
+                  const d = new Date(item.publish_time);
+                  if (!isNaN(d.getTime())) {
+                    const fDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit' });
+                    const fTime = new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit', hour12: false });
+                    targetDate = fDate.format(d);
+                    targetTime = fTime.format(d);
+                  } else {
                     targetDate = String(item.publish_time).split('T')[0].split(' ')[0];
                   }
+                } catch (_e) {
+                  targetDate = String(item.publish_time).split('T')[0].split(' ')[0];
                 }
-                const isShort = /#shorts?/i.test(item.title);
-                await this.db.createPlannedTheme({
+              }
+
+              // Prevenção de duplicidade: processa apenas uma entrada por título e data
+              const dedupKey = `${targetDate || 'sem-data'}::${cleanTitleLower}`;
+              if (processedTitlesByDate.has(dedupKey)) {
+                continue;
+              }
+              processedTitlesByDate.add(dedupKey);
+
+              // Detecção rigorosa de formato Short vs Longo a partir dos metadados e duração
+              let isShort = false;
+              let itemMeta = {};
+              if (item.metadata) {
+                try {
+                  itemMeta = typeof item.metadata === 'string' ? JSON.parse(item.metadata) : item.metadata;
+                  if (itemMeta.isShort === true || itemMeta.format === 'short') {
+                    isShort = true;
+                  } else if (itemMeta.duration && typeof itemMeta.duration === 'string') {
+                    // Duração ISO 8601 menor que 60 segundos (ex: PT43S, PT29S, sem M ou H)
+                    if (!itemMeta.duration.includes('M') && !itemMeta.duration.includes('H') && itemMeta.duration.includes('S')) {
+                      isShort = true;
+                    }
+                  }
+                } catch (_e) {}
+              }
+              if (!isShort) {
+                isShort = /#shorts?/i.test(item.title) || /#shorts?/i.test(itemMeta.description || '');
+              }
+
+              const targetFormat = isShort ? 'short' : 'explainer';
+
+              // Busca tema existente por URL exata do YouTube ou título + data
+              const matchedTheme = currentThemes.find(t => {
+                const tTopic = (t.topic || '').trim().toLowerCase();
+                const sameUrl = item.youtube_url && (t.published_url === item.youtube_url || t.publishedUrl === item.youtube_url);
+                const sameTitle = tTopic === cleanTitleLower || cleanTitleLower.includes(tTopic) || tTopic.includes(cleanTitleLower);
+                const sameDate = !targetDate || !t.scheduled_date || t.scheduled_date === targetDate;
+                return sameUrl || (sameTitle && sameDate);
+              });
+
+              if (matchedTheme) {
+                // Atualiza formato se estava incorretamente classificado como explainer quando é short
+                const needsFormatFix = isShort && matchedTheme.format !== 'short';
+                const needsUrlFix = !matchedTheme.published_url && item.youtube_url;
+                const needsTimeFix = !matchedTheme.scheduled_time && targetTime;
+                const needsStatusFix = item.youtube_url && matchedTheme.status !== 'posted';
+                if (needsFormatFix || needsUrlFix || needsTimeFix || needsStatusFix) {
+                  await this.db.updatePlannedTheme(matchedTheme.id, {
+                    ...(needsFormatFix ? { format: 'short', whyBetter: '⚡ Envio Direto de Cortes / Short' } : {}),
+                    ...(needsUrlFix ? { publishedUrl: item.youtube_url } : {}),
+                    ...(needsTimeFix ? { scheduledTime: targetTime } : {}),
+                    ...(needsStatusFix ? { status: 'posted' } : {})
+                  });
+                  matchedTheme.format = targetFormat;
+                  if (needsUrlFix) matchedTheme.published_url = item.youtube_url;
+                  if (needsTimeFix) matchedTheme.scheduled_time = targetTime;
+                  if (needsStatusFix) matchedTheme.status = 'posted';
+                }
+              } else {
+                const created = await this.db.createPlannedTheme({
                   channelId,
-                  topic: item.title,
-                  format: isShort ? 'short' : 'explainer',
+                  topic: cleanItemTitle,
+                  format: targetFormat,
                   status: 'posted',
                   scheduledDate: targetDate,
                   scheduledTime: targetTime,
                   publishedUrl: item.youtube_url || null,
                   whyBetter: isShort ? '⚡ Envio Direto de Cortes / Short' : 'Upload Agendado no YouTube'
                 });
+                currentThemes.push(created);
               }
             }
           }
@@ -2023,7 +2077,18 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
 
     this.app.patch('/api/workflow/planned-themes/:id', protect, async (req, res) => {
       try {
+        const existingTheme = await this.db.getPlannedTheme(req.params.id);
+        if (!existingTheme) {
+          return res.status(404).json({ success: false, error: 'Tema planejado não encontrado.' });
+        }
+
         const changes = { ...(req.body || {}) };
+        
+        // BLINDAGEM MÁXIMA: Se o tema já foi postado ou possui link publicado, NUNCA permite regredir para 'in_production'!
+        if (existingTheme.status === 'posted' || existingTheme.published_url) {
+          delete changes.status;
+        }
+
         if (changes.fullScript !== undefined || changes.full_script !== undefined) {
           const rawScript = changes.fullScript !== undefined ? changes.fullScript : changes.full_script;
           const cleanScript = rawScript ? String(rawScript).trim() : null;
@@ -2081,8 +2146,18 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
     this.app.post('/api/workflow/planned-themes/deduplicate', protect, async (req, res) => {
       try {
         const channelId = req.query.channelId || req.body?.channelId || null;
-        const result = await this.db.deduplicatePlannedThemes({ channelId });
-        return res.json({ success: true, count: result.count, removedIds: result.removedIds });
+        const resultThemes = await this.db.deduplicatePlannedThemes({ channelId });
+        const resultSchedule = typeof this.db.deduplicatePublishSchedule === 'function'
+          ? await this.db.deduplicatePublishSchedule()
+          : { count: 0, removedIds: [] };
+        const totalCount = (resultThemes.count || 0) + (resultSchedule.count || 0);
+        return res.json({
+          success: true,
+          count: totalCount,
+          themesCount: resultThemes.count || 0,
+          scheduleCount: resultSchedule.count || 0,
+          removedIds: [...(resultThemes.removedIds || []), ...(resultSchedule.removedIds || [])]
+        });
       } catch (error) {
         return res.status(500).json({ success: false, error: error.message });
       }
@@ -2160,7 +2235,8 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
           angleFamily,
           format,
           language,
-          fieldAHistory
+          fieldAHistory,
+          targetCharacters
         } = req.body || {};
         const profile = await this.db.getChannelProfile().catch(() => ({}));
 
@@ -2188,7 +2264,8 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
           format: format || 'explainer',
           language: language || 'it-IT',
           fieldAHistory: effectiveScriptHistory,
-          channelName: profile.name || ''
+          channelName: profile.name || '',
+          targetCharacters
         });
 
         // Gravação automática do histórico de ganchos para evitar repetições no próximo roteiro
@@ -2276,13 +2353,15 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
     this.app.post('/api/workflow/generate-seo', protect, async (req, res) => {
       try {
         if (!this.workflow) return res.status(503).json({ success: false, error: 'Workflow service not ready' });
-        const { script, topic, language } = req.body || {};
+        const { script, topic, language, previousTitle, previousDescription } = req.body || {};
         const profile = await this.db.getChannelProfile().catch(() => ({}));
         const result = await this.workflow.generateSEO({
           script,
           topic,
           language: language || 'it-IT',
-          channelName: profile.name || ''
+          channelName: profile.name || '',
+          previousTitle,
+          previousDescription
         });
         return res.json({ success: true, seo: result });
       } catch (error) {
@@ -2385,11 +2464,12 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
           bundle,
           format,
           themeId,
-          forceDuplicate
+          forceDuplicate,
+          replaceVideoId
         } = req.body || {};
 
         // 🔒 BLINDAGEM ANTI-REPETIÇÃO E ANTI-DUPLICIDADE
-        const { checkContentDuplication } = require('./utils/duplicate-detector');
+        const { checkContentDuplication, checkThemeMetadataLeakage } = require('./utils/duplicate-detector');
         const activeAccount = this.youtubeAccounts?.getActiveAccount();
         const allExisting = await this.db.listPlannedThemes({ channelId: activeAccount?.channelId || null });
 
@@ -2421,6 +2501,29 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
           if (matched) {
             effectiveThemeId = matched.id;
             themeId = matched.id;
+          }
+        }
+
+        // 🛡️ CHECK-UP ANTI-VAZAMENTO DE METADADOS ENTRE DATAS E TEMAS
+        const activeThemeRecord = effectiveThemeId ? allExisting.find(t => t.id === effectiveThemeId) : null;
+        const activeTopic = activeThemeRecord?.topic || (bundle?.script?.topic) || '';
+        if (!isShortUpload && activeTopic) {
+          const leakCheck = checkThemeMetadataLeakage({
+            activeTopic,
+            newTitle: title,
+            newDescription: description,
+            existingThemes: allExisting,
+            excludeId: effectiveThemeId
+          });
+
+          if (leakCheck.hasBlockingIssue && !forceDuplicate) {
+            const firstBlocker = leakCheck.issues.find(i => i.severity === 'block');
+            return res.status(409).json({
+              success: false,
+              metadataLeakBlocked: true,
+              error: firstBlocker?.message || 'Bloqueio de Inconsistência/Vazamento de Metadados ativado.',
+              issues: leakCheck.issues
+            });
           }
         }
 
@@ -2460,7 +2563,8 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
           thumbnailPrompt,
           seo,
           bundle,
-          format: format || 'explainer'
+          format: format || 'explainer',
+          replaceVideoId
         });
 
         // CRÍTICO: Validação real de envio para o YouTube oficial
@@ -2502,9 +2606,10 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
               uploadError: uploadError
             };
 
-            // Se realmente postou no YouTube, vira 'posted'. Se NÃO postou, permanece 'in_production' para permitir refazer a tentativa!
-            if (isReallyPosted) {
+            // Se foi postado/agendado no YouTube com sucesso ou gravado na fila oficial com log de produção, vira 'posted'!
+            if (isReallyPosted || result?.scheduleEntry?.id || result?.logFilePath || themeDataPayload.publishedUrl) {
               themeDataPayload.status = 'posted';
+              themeDataPayload.uploadError = null;
             } else {
               themeDataPayload.status = 'in_production';
             }
@@ -2552,6 +2657,94 @@ Respond ONLY with a valid JSON array in this exact schema, without markdown form
         });
       } catch (error) {
         return res.status(400).json({ success: false, error: error.message });
+      }
+    });
+
+    this.app.get('/api/workflow/reupload-prep/:id', protect, async (req, res) => {
+      try {
+        const param = req.params.id;
+        const allThemes = await this.db.listPlannedThemes();
+        
+        let schedRow = null;
+        if (param.startsWith('sched_') || param.startsWith('schedule_')) {
+          schedRow = await this.db.getRow('SELECT * FROM publish_schedule WHERE id = ?', [param]);
+        } else if (param.length === 11 && !param.includes('-')) {
+          schedRow = await this.db.getRow('SELECT * FROM publish_schedule WHERE youtube_id = ?', [param]);
+        }
+
+        let theme = allThemes.find(t => t.id === param);
+        if (!theme && schedRow) {
+          theme = allThemes.find(t => 
+            (t.published_url && schedRow.youtube_id && t.published_url.includes(schedRow.youtube_id)) ||
+            (t.scheduled_date && schedRow.publish_time && schedRow.publish_time.startsWith(t.scheduled_date) && t.format !== 'short')
+          );
+        }
+        if (!theme && param.includes('-')) {
+          theme = allThemes.find(t => t.scheduled_date === param && t.format !== 'short') || allThemes.find(t => t.scheduled_date === param);
+        }
+        if (!theme) {
+          theme = allThemes.find(t => t.topic && t.topic.toLowerCase().includes(param.toLowerCase()));
+        }
+
+        if (!schedRow && theme) {
+          if (theme.published_url) {
+            const ytId = theme.published_url.match(/[?&]v=([^&]+)/)?.[1];
+            if (ytId) schedRow = await this.db.getRow('SELECT * FROM publish_schedule WHERE youtube_id = ?', [ytId]);
+          }
+          if (!schedRow && theme.scheduled_date) {
+            schedRow = await this.db.getRow('SELECT * FROM publish_schedule WHERE publish_time LIKE ? ORDER BY id DESC LIMIT 1', [`%${theme.scheduled_date}%`]);
+          }
+        }
+
+        if (!theme && !schedRow) {
+          return res.status(404).json({ success: false, error: 'Registro não encontrado para reenvio' });
+        }
+
+        let parsedSeo = null;
+        try {
+          parsedSeo = typeof theme?.seo_data === 'string' ? JSON.parse(theme.seo_data) : (theme?.seo_data || null);
+        } catch (_) {}
+
+        let schedMeta = {};
+        try {
+          schedMeta = JSON.parse(schedRow?.metadata || '{}');
+        } catch (_) {}
+
+        const title = parsedSeo?.title || theme?.topic || schedRow?.title || '';
+        const description = parsedSeo?.description || schedMeta?.seo?.description || '';
+        const tags = parsedSeo?.tags || parsedSeo?.hashtags || schedMeta?.seo?.tags || [];
+        const publishDate = theme?.scheduled_date || (schedRow?.publish_time ? schedRow.publish_time.split('T')[0] : '');
+        let publishTime = theme?.scheduled_time || '16:00';
+        if (schedRow?.publish_time) {
+          const dt = new Date(schedRow.publish_time);
+          if (!isNaN(dt.getTime())) {
+            const h = String(dt.getUTCHours()).padStart(2, '0');
+            const m = String(dt.getUTCMinutes()).padStart(2, '0');
+            // se o tema tem scheduled_time usar o do tema
+            if (!theme?.scheduled_time) publishTime = `${h}:${m}`;
+          }
+        }
+
+        const videoPath = theme?.video_path || schedMeta?.video?.path || null;
+        const thumbnailPath = theme?.thumbnail_path || schedMeta?.thumbnail?.path || null;
+        const previousYoutubeId = theme?.published_url?.match(/[?&]v=([^&]+)/)?.[1] || schedRow?.youtube_id || null;
+
+        return res.json({
+          success: true,
+          themeId: theme?.id || null,
+          scheduleId: schedRow?.id || null,
+          title,
+          description,
+          tags: Array.isArray(tags) ? tags : String(tags).split(',').map(t => t.trim()).filter(Boolean),
+          publishDate,
+          publishTime,
+          videoPath,
+          thumbnailPath,
+          previousYoutubeId,
+          topic: theme?.topic || title
+        });
+      } catch (err) {
+        return res.status(500).json({ success: false, error: err.message });
       }
     });
 
